@@ -18,6 +18,7 @@ import { resolveReplyDirectives } from "./get-reply-directives.js";
 import { handleInlineActions } from "./get-reply-inline-actions.js";
 import { runPreparedReply } from "./get-reply-run.js";
 import { finalizeInboundContext } from "./inbound-context.js";
+import { createInternalHookEvent, triggerInternalHook } from "../../hooks/internal-hooks.js";
 import { initSessionState } from "./session.js";
 import { stageSandboxMedia } from "./stage-sandbox-media.js";
 import { createTypingController } from "./typing.js";
@@ -103,6 +104,7 @@ export async function getReplyFromConfig(
     sessionKey,
     sessionId,
     isNewSession,
+    sessionStartReason,
     systemSent,
     abortedLastRun,
     storePath,
@@ -111,6 +113,31 @@ export async function getReplyFromConfig(
     isGroup,
     triggerBodyNormalized,
   } = sessionState;
+
+  if (isNewSession && sessionKey) {
+    const hookEvent = createInternalHookEvent("session", "start", sessionKey, {
+      sessionStartReason,
+      sessionId,
+      sessionEntry,
+      storePath,
+      workspaceDir,
+      agentId,
+    });
+    await triggerInternalHook(hookEvent);
+
+    const appendRaw = (hookEvent.context as Record<string, unknown>).extraSystemPromptAppend;
+    const append = typeof appendRaw === "string" ? appendRaw.trim() : "";
+    if (append) {
+      const MAX_CHARS = 4000;
+      const clipped = append.length > MAX_CHARS ? append.slice(0, MAX_CHARS) : append;
+      const current = sessionCtx.GroupSystemPrompt?.trim() ?? "";
+      sessionCtx = {
+        ...sessionCtx,
+        GroupSystemPrompt: [current, clipped].filter(Boolean).join("\n\n"),
+      };
+    }
+  }
+
 
   const directiveResult = await resolveReplyDirectives({
     ctx: finalized,

@@ -31,6 +31,8 @@ import { formatInboundBodyWithSenderMeta } from "./inbound-sender-meta.js";
 import { normalizeInboundTextNewlines } from "./inbound-text.js";
 import { normalizeSessionDeliveryFields } from "../../utils/delivery-context.js";
 
+export type SessionStartReason = "reset_trigger" | "idle_expiry" | "fresh";
+
 export type SessionInitResult = {
   sessionCtx: TemplateContext;
   sessionEntry: SessionEntry;
@@ -39,6 +41,7 @@ export type SessionInitResult = {
   sessionKey: string;
   sessionId: string;
   isNewSession: boolean;
+  sessionStartReason?: SessionStartReason;
   systemSent: boolean;
   abortedLastRun: boolean;
   storePath: string;
@@ -121,6 +124,7 @@ export async function initSessionState(params: {
   let systemSent = false;
   let abortedLastRun = false;
   let resetTriggered = false;
+  let sessionStartReason: SessionStartReason | undefined;
 
   let persistedThinking: string | undefined;
   let persistedVerbose: string | undefined;
@@ -189,6 +193,14 @@ export async function initSessionState(params: {
     isNewSession = true;
     systemSent = false;
     abortedLastRun = false;
+
+    if (resetTriggered) {
+      sessionStartReason = "reset_trigger";
+    } else if (entry) {
+      sessionStartReason = "idle_expiry";
+    } else {
+      sessionStartReason = "fresh";
+    }
   }
 
   const baseEntry = !isNewSession && freshEntry ? entry : undefined;
@@ -347,5 +359,6 @@ export async function initSessionState(params: {
     isGroup,
     bodyStripped,
     triggerBodyNormalized,
+    sessionStartReason,
   };
 }
