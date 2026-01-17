@@ -44,6 +44,7 @@ import {
   emitAgentEvent,
   registerAgentRunContext,
 } from "../infra/agent-events.js";
+import { createInternalHookEvent, triggerInternalHook } from "../hooks/internal-hooks.js";
 import { getRemoteSkillEligibility } from "../infra/skills-remote.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { applyVerboseOverride } from "../sessions/level-overrides.js";
@@ -61,6 +62,8 @@ export async function agentCommand(
 ) {
   const body = (opts.message ?? "").trim();
   if (!body) throw new Error("Message (--message) is required");
+
+  let extraSystemPrompt = opts.extraSystemPrompt;
   if (!opts.to && !opts.sessionId && !opts.sessionKey) {
     throw new Error("Pass --to <E.164> or --session-id to choose a session");
   }
@@ -126,6 +129,36 @@ export async function agentCommand(
     persistedThinking,
     persistedVerbose,
   } = sessionResolution;
+
+  const shouldFireSessionStart =
+    Boolean(sessionKey) && (isNewSession || resolvedSessionEntry?.systemSent !== true);
+
+  if (shouldFireSessionStart && sessionKey) {
+    const reason = (() => {
+      if (resolvedSessionEntry?.systemSent === false) return "reset_trigger";
+      if (isNewSession && resolvedSessionEntry) return "idle_expiry";
+      if (isNewSession) return "fresh";
+      return undefined;
+    })();
+
+    const hookEvent = createInternalHookEvent("session", "start", sessionKey, {
+      sessionStartReason: reason,
+      sessionId,
+      sessionEntry: resolvedSessionEntry,
+      storePath,
+      workspaceDir,
+      agentId: sessionAgentId,
+    });
+    await triggerInternalHook(hookEvent);
+
+    const appendRaw = (hookEvent.context as Record<string, unknown>).extraSystemPromptAppend;
+    const append = typeof appendRaw === "string" ? appendRaw.trim() : "";
+    if (append) {
+      const MAX_CHARS = 4000;
+      const clipped = append.length > MAX_CHARS ? append.slice(0, MAX_CHARS) : append;
+      extraSystemPrompt = [extraSystemPrompt, clipped].filter(Boolean).join("\n\n");
+    }
+  }
   let sessionEntry = resolvedSessionEntry;
   const runId = opts.runId?.trim() || sessionId;
 
@@ -367,7 +400,7 @@ export async function agentCommand(
               thinkLevel: resolvedThinkLevel,
               timeoutMs,
               runId,
-              extraSystemPrompt: opts.extraSystemPrompt,
+              extraSystemPrompt,
               cliSessionId,
               images: opts.images,
             });
@@ -391,7 +424,7 @@ export async function agentCommand(
             runId,
             lane: opts.lane,
             abortSignal: opts.abortSignal,
-            extraSystemPrompt: opts.extraSystemPrompt,
+            extraSystemPrompt,
             agentDir,
             onAgentEvent: (evt) => {
               if (

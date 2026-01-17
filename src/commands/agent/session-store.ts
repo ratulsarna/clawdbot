@@ -50,6 +50,7 @@ export async function updateSessionStoreAfterAgentRun(params: {
     ...entry,
     sessionId,
     updatedAt: Date.now(),
+    systemSent: true,
     modelProvider: providerUsed,
     model: modelUsed,
     contextTokens,
