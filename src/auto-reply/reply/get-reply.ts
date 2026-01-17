@@ -114,10 +114,13 @@ export async function getReplyFromConfig(
     triggerBodyNormalized,
   } = sessionState;
 
-  const isFirstTurnInSession = isNewSession || !systemSent;
-  if (isFirstTurnInSession && sessionKey) {
-    const effectiveReason =
-      sessionStartReason ?? (!isNewSession && !systemSent ? "reset_trigger" : undefined);
+  // Fire session:start for the first user-visible turn of a session.
+  // This covers:
+  // - isNewSession=true (idle expiry / first ever session / recovery)
+  // - post-reset first turn where the sessionId was minted earlier but systemSent is still false
+  const shouldFireSessionStart = isNewSession || !systemSent;
+  if (shouldFireSessionStart && sessionKey) {
+    const effectiveReason = sessionStartReason;
     const hookEvent = createInternalHookEvent("session", "start", sessionKey, {
       sessionStartReason: effectiveReason,
       sessionId,
