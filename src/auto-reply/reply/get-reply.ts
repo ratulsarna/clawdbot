@@ -114,9 +114,12 @@ export async function getReplyFromConfig(
     triggerBodyNormalized,
   } = sessionState;
 
-  if (isNewSession && sessionKey) {
+  const isFirstTurnInSession = isNewSession || !systemSent;
+  if (isFirstTurnInSession && sessionKey) {
+    const effectiveReason =
+      sessionStartReason ?? (!isNewSession && !systemSent ? "reset_trigger" : undefined);
     const hookEvent = createInternalHookEvent("session", "start", sessionKey, {
-      sessionStartReason,
+      sessionStartReason: effectiveReason,
       sessionId,
       sessionEntry,
       storePath,
