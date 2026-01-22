@@ -159,8 +159,11 @@ export async function agentCommand(
     Boolean(sessionKey) && (isNewSession || resolvedSessionEntry?.systemSent !== true);
 
   if (shouldFireSessionStart && sessionKey) {
+    // Derive reason aligned with initSessionState logic.
+    // CLI path doesn't parse /new commands, so we can't detect reset_trigger here.
+    // Use "recovery" when entry exists but systemSent is false (e.g., after compaction reset).
     const reason = (() => {
-      if (resolvedSessionEntry?.systemSent === false) return "reset_trigger";
+      if (!isNewSession && resolvedSessionEntry?.systemSent === false) return "recovery";
       if (isNewSession && resolvedSessionEntry) return "idle_expiry";
       if (isNewSession) return "fresh";
       return undefined;

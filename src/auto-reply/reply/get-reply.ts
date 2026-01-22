@@ -124,7 +124,8 @@ export async function getReplyFromConfig(
   // This covers:
   // - isNewSession=true (idle expiry / first ever session / recovery)
   // - post-reset first turn where the sessionId was minted earlier but systemSent is still false
-  const shouldFireSessionStart = isNewSession || !systemSent;
+  // Skip for heartbeat runs to avoid firing before the first real user message.
+  const shouldFireSessionStart = !opts?.isHeartbeat && (isNewSession || !systemSent);
   if (shouldFireSessionStart && sessionKey) {
     const effectiveReason = sessionStartReason;
     const hookEvent = createInternalHookEvent("session", "start", sessionKey, {
