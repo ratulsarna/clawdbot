@@ -19,6 +19,8 @@ export type AuthChoice =
   | "codex-cli"
   | "apiKey"
   | "gemini-api-key"
+  | "google-antigravity"
+  | "google-gemini-cli"
   | "zai-api-key"
   | "minimax-cloud"
   | "minimax"
@@ -26,10 +28,12 @@ export type AuthChoice =
   | "minimax-api-lightning"
   | "opencode-zen"
   | "github-copilot"
+  | "copilot-proxy"
+  | "qwen-portal"
   | "skip";
 export type GatewayAuthChoice = "off" | "token" | "password";
 export type ResetScope = "config" | "config+creds+sessions" | "full";
-export type GatewayBind = "loopback" | "lan" | "auto" | "custom";
+export type GatewayBind = "loopback" | "lan" | "auto" | "custom" | "tailnet";
 export type TailscaleMode = "off" | "serve" | "funnel";
 export type NodeManagerChoice = "npm" | "pnpm" | "bun";
 export type ChannelChoice = ChannelId;

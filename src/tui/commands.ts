@@ -3,9 +3,9 @@ import { formatThinkingLevels, listThinkingLevelLabels } from "../auto-reply/thi
 
 const VERBOSE_LEVELS = ["on", "off"];
 const REASONING_LEVELS = ["on", "off"];
-const ELEVATED_LEVELS = ["on", "off"];
+const ELEVATED_LEVELS = ["on", "off", "ask", "full"];
 const ACTIVATION_LEVELS = ["mention", "always"];
-const TOGGLE = ["on", "off"];
+const USAGE_FOOTER_LEVELS = ["off", "tokens", "full"];
 
 export type ParsedCommand = {
   name: string;
@@ -73,17 +73,17 @@ export function getSlashCommands(options: SlashCommandOptions = {}): SlashComman
         })),
     },
     {
-      name: "cost",
+      name: "usage",
       description: "Toggle per-response usage line",
       getArgumentCompletions: (prefix) =>
-        TOGGLE.filter((v) => v.startsWith(prefix.toLowerCase())).map((value) => ({
+        USAGE_FOOTER_LEVELS.filter((v) => v.startsWith(prefix.toLowerCase())).map((value) => ({
           value,
           label: value,
         })),
     },
     {
       name: "elevated",
-      description: "Set elevated on/off",
+      description: "Set elevated on/off/ask/full",
       getArgumentCompletions: (prefix) =>
         ELEVATED_LEVELS.filter((v) => v.startsWith(prefix.toLowerCase())).map((value) => ({
           value,
@@ -129,9 +129,9 @@ export function helpText(options: SlashCommandOptions = {}): string {
     `/think <${thinkLevels}>`,
     "/verbose <on|off>",
     "/reasoning <on|off>",
-    "/cost <on|off>",
-    "/elevated <on|off>",
-    "/elev <on|off>",
+    "/usage <off|tokens|full>",
+    "/elevated <on|off|ask|full>",
+    "/elev <on|off|ask|full>",
     "/activation <mention|always>",
     "/new or /reset",
     "/abort",

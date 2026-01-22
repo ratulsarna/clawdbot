@@ -77,8 +77,8 @@ Session controls:
 - `/think <off|minimal|low|medium|high>`
 - `/verbose <on|full|off>`
 - `/reasoning <on|off|stream>`
-- `/cost <on|off>`
-- `/elevated <on|off>` (alias: `/elev`)
+- `/usage <off|tokens|full>`
+- `/elevated <on|off|ask|full>` (alias: `/elev`)
 - `/activation <mention|always>`
 - `/deliver <on|off>`
 

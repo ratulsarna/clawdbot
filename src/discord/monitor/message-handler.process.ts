@@ -8,7 +8,11 @@ import {
   extractShortModelName,
   type ResponsePrefixContext,
 } from "../../auto-reply/reply/response-prefix-template.js";
-import { formatInboundEnvelope, formatThreadStarterEnvelope } from "../../auto-reply/envelope.js";
+import {
+  formatInboundEnvelope,
+  formatThreadStarterEnvelope,
+  resolveEnvelopeFormatOptions,
+} from "../../auto-reply/envelope.js";
 import { dispatchReplyFromConfig } from "../../auto-reply/reply/dispatch-from-config.js";
 import {
   buildPendingHistoryContextFromMap,
@@ -17,7 +21,12 @@ import {
 import { finalizeInboundContext } from "../../auto-reply/reply/inbound-context.js";
 import { createReplyDispatcherWithTyping } from "../../auto-reply/reply/reply-dispatcher.js";
 import type { ReplyPayload } from "../../auto-reply/types.js";
-import { resolveStorePath, updateLastRoute } from "../../config/sessions.js";
+import {
+  readSessionUpdatedAt,
+  recordSessionMetaFromInbound,
+  resolveStorePath,
+  updateLastRoute,
+} from "../../config/sessions.js";
 import { danger, logVerbose, shouldLogVerbose } from "../../globals.js";
 import { buildAgentSessionKey } from "../../routing/resolve-route.js";
 import { resolveThreadSessionKeys } from "../../routing/session-key.js";
@@ -133,6 +142,14 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
   ].filter((entry): entry is string => Boolean(entry));
   const groupSystemPrompt =
     systemPromptParts.length > 0 ? systemPromptParts.join("\n\n") : undefined;
+  const storePath = resolveStorePath(cfg.session?.store, {
+    agentId: route.agentId,
+  });
+  const envelopeOptions = resolveEnvelopeFormatOptions(cfg);
+  const previousTimestamp = readSessionUpdatedAt({
+    storePath,
+    sessionKey: route.sessionKey,
+  });
   let combinedBody = formatInboundEnvelope({
     channel: "Discord",
     from: fromLabel,
@@ -140,6 +157,8 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     body: text,
     chatType: isDirectMessage ? "direct" : "channel",
     senderLabel,
+    previousTimestamp,
+    envelope: envelopeOptions,
   });
   const shouldIncludeChannelHistory =
     !isDirectMessage && !(isGuildMessage && channelConfig?.autoThread && !threadChannel);
@@ -157,10 +176,13 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
           body: `${entry.body} [id:${entry.messageId ?? "unknown"} channel:${message.channelId}]`,
           chatType: "channel",
           senderLabel: entry.sender,
+          envelope: envelopeOptions,
         }),
     });
   }
-  const replyContext = resolveReplyContext(message, resolveDiscordMessageText);
+  const replyContext = resolveReplyContext(message, resolveDiscordMessageText, {
+    envelope: envelopeOptions,
+  });
   if (replyContext) {
     combinedBody = `[Replied message - for context]\n${replyContext}\n\n${combinedBody}`;
   }
@@ -182,6 +204,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
         author: starter.author,
         timestamp: starter.timestamp,
         body: starter.text,
+        envelope: envelopeOptions,
       });
       threadStarterBody = starterEnvelope;
     }
@@ -264,11 +287,15 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     OriginatingTo: autoThreadContext?.OriginatingTo ?? replyTarget,
   });
 
+  void recordSessionMetaFromInbound({
+    storePath,
+    sessionKey: ctxPayload.SessionKey ?? route.sessionKey,
+    ctx: ctxPayload,
+  }).catch((err) => {
+    logVerbose(`discord: failed updating session meta: ${String(err)}`);
+  });
+
   if (isDirectMessage) {
-    const sessionCfg = cfg.session;
-    const storePath = resolveStorePath(sessionCfg?.store, {
-      agentId: route.agentId,
-    });
     await updateLastRoute({
       storePath,
       sessionKey: route.mainSessionKey,
@@ -277,6 +304,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
         to: `user:${author.id}`,
         accountId: route.accountId,
       },
+      ctx: ctxPayload,
     });
   }
 

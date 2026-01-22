@@ -154,6 +154,9 @@ See [Plugins](/plugin) for install + config, and [Skills](/tools/skills) for how
 tool usage guidance is injected into prompts. Some plugins ship their own skills
 alongside tools (for example, the voice-call plugin).
 
+Optional plugin tools:
+- [Lobster](/tools/lobster): typed workflow runtime with resumable approvals (requires the Lobster CLI on the gateway host).
+
 ## Tool inventory
 
 ### `apply_patch`
@@ -169,14 +172,20 @@ Core parameters:
 - `background` (immediate background)
 - `timeout` (seconds; kills the process if exceeded, default 1800)
 - `elevated` (bool; run on host if elevated mode is enabled/allowed; only changes behavior when the agent is sandboxed)
+- `host` (`sandbox | gateway | node`)
+- `security` (`deny | allowlist | full`)
+- `ask` (`off | on-miss | always`)
+- `node` (node id/name for `host=node`)
 - Need a real TTY? Set `pty: true`.
 
 Notes:
 - Returns `status: "running"` with a `sessionId` when backgrounded.
 - Use `process` to poll/log/write/kill/clear background sessions.
 - If `process` is disallowed, `exec` runs synchronously and ignores `yieldMs`/`background`.
-- `elevated` is gated by `tools.elevated` plus any `agents.list[].tools.elevated` override (both must allow) and runs on the host.
+- `elevated` is gated by `tools.elevated` plus any `agents.list[].tools.elevated` override (both must allow) and is an alias for `host=gateway` + `security=full`.
 - `elevated` only changes behavior when the agent is sandboxed (otherwise it’s a no-op).
+- `host=node` can target a macOS companion app or a headless node host (`clawdbot node run`).
+- gateway/node approvals and allowlists: [Exec approvals](/tools/exec-approvals).
 
 ### `process`
 Manage background exec sessions.
@@ -313,7 +322,7 @@ Notes:
 Send messages and channel actions across Discord/Slack/Telegram/WhatsApp/Signal/iMessage/MS Teams.
 
 Core actions:
-- `send` (text + optional media)
+- `send` (text + optional media; MS Teams also supports `card` for Adaptive Cards)
 - `poll` (WhatsApp/Discord/MS Teams polls)
 - `react` / `reactions` / `read` / `edit` / `delete`
 - `pin` / `unpin` / `list-pins`
@@ -350,7 +359,7 @@ Notes:
 Restart or apply updates to the running Gateway process (in-place).
 
 Core actions:
-- `restart` (sends `SIGUSR1` to the current process; `clawdbot gateway` restart in-place)
+- `restart` (authorizes + sends `SIGUSR1` for in-process restart; `clawdbot gateway` restart in-place)
 - `config.get` / `config.schema`
 - `config.apply` (validate + write config + restart + wake)
 - `update.run` (run update + restart + wake)

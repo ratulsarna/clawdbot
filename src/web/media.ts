@@ -1,13 +1,15 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { logVerbose, shouldLogVerbose } from "../globals.js";
 import { type MediaKind, maxBytesForKind, mediaKindFromMime } from "../media/constants.js";
+import { resolveUserPath } from "../utils.js";
 import { fetchRemoteMedia } from "../media/fetch.js";
-import { resizeToJpeg } from "../media/image-ops.js";
+import { convertHeicToJpeg, resizeToJpeg } from "../media/image-ops.js";
 import { detectMime, extensionForMime } from "../media/mime.js";
 
-type WebMediaResult = {
+export type WebMediaResult = {
   buffer: Buffer;
   contentType?: string;
   kind: MediaKind;
@@ -19,18 +21,48 @@ type WebMediaOptions = {
   optimizeImages?: boolean;
 };
 
+const HEIC_MIME_RE = /^image\/hei[cf]$/i;
+const HEIC_EXT_RE = /\.(heic|heif)$/i;
+
+function isHeicSource(opts: { contentType?: string; fileName?: string }): boolean {
+  if (opts.contentType && HEIC_MIME_RE.test(opts.contentType.trim())) return true;
+  if (opts.fileName && HEIC_EXT_RE.test(opts.fileName.trim())) return true;
+  return false;
+}
+
+function toJpegFileName(fileName?: string): string | undefined {
+  if (!fileName) return undefined;
+  const trimmed = fileName.trim();
+  if (!trimmed) return fileName;
+  const parsed = path.parse(trimmed);
+  if (!parsed.ext || HEIC_EXT_RE.test(parsed.ext)) {
+    return path.format({ dir: parsed.dir, name: parsed.name || trimmed, ext: ".jpg" });
+  }
+  return path.format({ dir: parsed.dir, name: parsed.name, ext: ".jpg" });
+}
+
 async function loadWebMediaInternal(
   mediaUrl: string,
   options: WebMediaOptions = {},
 ): Promise<WebMediaResult> {
   const { maxBytes, optimizeImages = true } = options;
+  // Use fileURLToPath for proper handling of file:// URLs (handles file://localhost/path, etc.)
   if (mediaUrl.startsWith("file://")) {
-    mediaUrl = mediaUrl.replace("file://", "");
+    try {
+      mediaUrl = fileURLToPath(mediaUrl);
+    } catch {
+      throw new Error(`Invalid file:// URL: ${mediaUrl}`);
+    }
   }
 
-  const optimizeAndClampImage = async (buffer: Buffer, cap: number) => {
+  const optimizeAndClampImage = async (
+    buffer: Buffer,
+    cap: number,
+    meta?: { contentType?: string; fileName?: string },
+  ) => {
     const originalSize = buffer.length;
-    const optimized = await optimizeImageToJpeg(buffer, cap);
+    const optimized = await optimizeImageToJpeg(buffer, cap, meta);
+    const fileName = meta && isHeicSource(meta) ? toJpegFileName(meta.fileName) : meta?.fileName;
     if (optimized.optimizedSize < originalSize && shouldLogVerbose()) {
       logVerbose(
         `Optimized media from ${(originalSize / (1024 * 1024)).toFixed(2)}MB to ${(optimized.optimizedSize / (1024 * 1024)).toFixed(2)}MB (side≤${optimized.resizeSide}px, q=${optimized.quality})`,
@@ -48,6 +80,7 @@ async function loadWebMediaInternal(
       buffer: optimized.buffer,
       contentType: "image/jpeg",
       kind: "image" as const,
+      fileName,
     };
   };
 
@@ -57,7 +90,9 @@ async function loadWebMediaInternal(
     kind: MediaKind;
     fileName?: string;
   }): Promise<WebMediaResult> => {
-    const cap = Math.min(maxBytes ?? maxBytesForKind(params.kind), maxBytesForKind(params.kind));
+    // If caller explicitly provides maxBytes, trust it (for channels that handle large files).
+    // Otherwise fall back to per-kind defaults.
+    const cap = maxBytes !== undefined ? maxBytes : maxBytesForKind(params.kind);
     if (params.kind === "image") {
       const isGif = params.contentType === "image/gif";
       if (isGif || !optimizeImages) {
@@ -77,8 +112,10 @@ async function loadWebMediaInternal(
         };
       }
       return {
-        ...(await optimizeAndClampImage(params.buffer, cap)),
-        fileName: params.fileName,
+        ...(await optimizeAndClampImage(params.buffer, cap, {
+          contentType: params.contentType,
+          fileName: params.fileName,
+        })),
       };
     }
     if (params.buffer.length > cap) {
@@ -102,6 +139,11 @@ async function loadWebMediaInternal(
     const { buffer, contentType, fileName } = fetched;
     const kind = mediaKindFromMime(contentType);
     return await clampAndFinalize({ buffer, contentType, kind, fileName });
+  }
+
+  // Expand tilde paths to absolute paths (e.g., ~/Downloads/photo.jpg)
+  if (mediaUrl.startsWith("~")) {
+    mediaUrl = resolveUserPath(mediaUrl);
   }
 
   // Local path
@@ -141,6 +183,7 @@ export async function loadWebMediaRaw(
 export async function optimizeImageToJpeg(
   buffer: Buffer,
   maxBytes: number,
+  opts: { contentType?: string; fileName?: string } = {},
 ): Promise<{
   buffer: Buffer;
   optimizedSize: number;
@@ -148,6 +191,14 @@ export async function optimizeImageToJpeg(
   quality: number;
 }> {
   // Try a grid of sizes/qualities until under the limit.
+  let source = buffer;
+  if (isHeicSource(opts)) {
+    try {
+      source = await convertHeicToJpeg(buffer);
+    } catch (err) {
+      throw new Error(`HEIC image conversion failed: ${String(err)}`);
+    }
+  }
   const sides = [2048, 1536, 1280, 1024, 800];
   const qualities = [80, 70, 60, 50, 40];
   let smallest: {
@@ -159,23 +210,27 @@ export async function optimizeImageToJpeg(
 
   for (const side of sides) {
     for (const quality of qualities) {
-      const out = await resizeToJpeg({
-        buffer,
-        maxSide: side,
-        quality,
-        withoutEnlargement: true,
-      });
-      const size = out.length;
-      if (!smallest || size < smallest.size) {
-        smallest = { buffer: out, size, resizeSide: side, quality };
-      }
-      if (size <= maxBytes) {
-        return {
-          buffer: out,
-          optimizedSize: size,
-          resizeSide: side,
+      try {
+        const out = await resizeToJpeg({
+          buffer: source,
+          maxSide: side,
           quality,
-        };
+          withoutEnlargement: true,
+        });
+        const size = out.length;
+        if (!smallest || size < smallest.size) {
+          smallest = { buffer: out, size, resizeSide: side, quality };
+        }
+        if (size <= maxBytes) {
+          return {
+            buffer: out,
+            optimizedSize: size,
+            resizeSide: side,
+            quality,
+          };
+        }
+      } catch {
+        // Continue trying other size/quality combinations
       }
     }
   }

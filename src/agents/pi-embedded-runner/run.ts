@@ -21,7 +21,9 @@ import {
   ensureAuthProfileStore,
   getApiKeyForModel,
   resolveAuthProfileOrder,
+  type ResolvedProviderAuth,
 } from "../model-auth.js";
+import { normalizeProviderId } from "../model-selection.js";
 import { ensureClawdbotModelsJson } from "../models-config.js";
 import {
   classifyFailoverReason,
@@ -31,6 +33,7 @@ import {
   isContextOverflowError,
   isFailoverAssistantError,
   isFailoverErrorMessage,
+  parseImageDimensionError,
   isRateLimitAssistantError,
   isTimeoutErrorMessage,
   pickFallbackThinkingLevel,
@@ -46,11 +49,19 @@ import { buildEmbeddedRunPayloads } from "./run/payloads.js";
 import type { EmbeddedPiAgentMeta, EmbeddedPiRunResult } from "./types.js";
 import { describeUnknownError } from "./utils.js";
 
-type ApiKeyInfo = {
-  apiKey: string;
-  profileId?: string;
-  source: string;
-};
+type ApiKeyInfo = ResolvedProviderAuth;
+
+// Avoid Anthropic's refusal test token poisoning session transcripts.
+const ANTHROPIC_MAGIC_STRING_TRIGGER_REFUSAL = "ANTHROPIC_MAGIC_STRING_TRIGGER_REFUSAL";
+const ANTHROPIC_MAGIC_STRING_REPLACEMENT = "ANTHROPIC MAGIC STRING TRIGGER REFUSAL (redacted)";
+
+function scrubAnthropicRefusalMagic(prompt: string): string {
+  if (!prompt.includes(ANTHROPIC_MAGIC_STRING_TRIGGER_REFUSAL)) return prompt;
+  return prompt.replaceAll(
+    ANTHROPIC_MAGIC_STRING_TRIGGER_REFUSAL,
+    ANTHROPIC_MAGIC_STRING_REPLACEMENT,
+  );
+}
 
 export async function runEmbeddedPiAgent(
   params: RunEmbeddedPiAgentParams,
@@ -116,16 +127,26 @@ export async function runEmbeddedPiAgent(
         );
       }
 
-      const authStore = ensureAuthProfileStore(agentDir);
-      const explicitProfileId = params.authProfileId?.trim();
+      const authStore = ensureAuthProfileStore(agentDir, { allowKeychainPrompt: false });
+      const preferredProfileId = params.authProfileId?.trim();
+      let lockedProfileId = params.authProfileIdSource === "user" ? preferredProfileId : undefined;
+      if (lockedProfileId) {
+        const lockedProfile = authStore.profiles[lockedProfileId];
+        if (
+          !lockedProfile ||
+          normalizeProviderId(lockedProfile.provider) !== normalizeProviderId(provider)
+        ) {
+          lockedProfileId = undefined;
+        }
+      }
       const profileOrder = resolveAuthProfileOrder({
         cfg: params.config,
         store: authStore,
         provider,
-        preferredProfile: explicitProfileId,
+        preferredProfile: preferredProfileId,
       });
-      if (explicitProfileId && !profileOrder.includes(explicitProfileId)) {
-        throw new Error(`Auth profile "${explicitProfileId}" is not configured for ${provider}.`);
+      if (lockedProfileId && !profileOrder.includes(lockedProfileId)) {
+        throw new Error(`Auth profile "${lockedProfileId}" is not configured for ${provider}.`);
       }
       const profileCandidates = profileOrder.length > 0 ? profileOrder : [undefined];
       let profileIndex = 0;
@@ -148,6 +169,15 @@ export async function runEmbeddedPiAgent(
 
       const applyApiKeyInfo = async (candidate?: string): Promise<void> => {
         apiKeyInfo = await resolveApiKeyForCandidate(candidate);
+        if (!apiKeyInfo.apiKey) {
+          if (apiKeyInfo.mode !== "aws-sdk") {
+            throw new Error(
+              `No API key resolved for provider "${model.provider}" (auth mode: ${apiKeyInfo.mode}).`,
+            );
+          }
+          lastProfileId = apiKeyInfo.profileId;
+          return;
+        }
         if (model.provider === "github-copilot") {
           const { resolveCopilotApiToken } =
             await import("../../providers/github-copilot-token.js");
@@ -162,6 +192,7 @@ export async function runEmbeddedPiAgent(
       };
 
       const advanceAuthProfile = async (): Promise<boolean> => {
+        if (lockedProfileId) return false;
         let nextIndex = profileIndex + 1;
         while (nextIndex < profileCandidates.length) {
           const candidate = profileCandidates[nextIndex];
@@ -172,7 +203,7 @@ export async function runEmbeddedPiAgent(
             attemptedThinking.clear();
             return true;
           } catch (err) {
-            if (candidate && candidate === explicitProfileId) throw err;
+            if (candidate && candidate === lockedProfileId) throw err;
             nextIndex += 1;
           }
         }
@@ -182,7 +213,7 @@ export async function runEmbeddedPiAgent(
       try {
         await applyApiKeyInfo(profileCandidates[profileIndex]);
       } catch (err) {
-        if (profileCandidates[profileIndex] === explicitProfileId) throw err;
+        if (profileCandidates[profileIndex] === lockedProfileId) throw err;
         const advanced = await advanceAuthProfile();
         if (!advanced) throw err;
       }
@@ -192,12 +223,17 @@ export async function runEmbeddedPiAgent(
           attemptedThinking.add(thinkLevel);
           await fs.mkdir(resolvedWorkspace, { recursive: true });
 
+          const prompt =
+            provider === "anthropic" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt;
+
           const attempt = await runEmbeddedAttempt({
             sessionId: params.sessionId,
             sessionKey: params.sessionKey,
             messageChannel: params.messageChannel,
             messageProvider: params.messageProvider,
             agentAccountId: params.agentAccountId,
+            messageTo: params.messageTo,
+            messageThreadId: params.messageThreadId,
             currentChannelId: params.currentChannelId,
             currentThreadTs: params.currentThreadTs,
             replyToMode: params.replyToMode,
@@ -207,7 +243,7 @@ export async function runEmbeddedPiAgent(
             agentDir,
             config: params.config,
             skillsSnapshot: params.skillsSnapshot,
-            prompt: params.prompt,
+            prompt,
             images: params.images,
             provider,
             modelId,
@@ -218,6 +254,7 @@ export async function runEmbeddedPiAgent(
             verboseLevel: params.verboseLevel,
             reasoningLevel: params.reasoningLevel,
             toolResultFormat: resolvedToolResultFormat,
+            execOverrides: params.execOverrides,
             bashElevated: params.bashElevated,
             timeoutMs: params.timeoutMs,
             runId: params.runId,
@@ -234,6 +271,7 @@ export async function runEmbeddedPiAgent(
             onToolResult: params.onToolResult,
             onAgentEvent: params.onAgentEvent,
             extraSystemPrompt: params.extraSystemPrompt,
+            streamParams: params.streamParams,
             ownerNumbers: params.ownerNumbers,
             enforceFinalTag: params.enforceFinalTag,
           });
@@ -318,6 +356,19 @@ export async function runEmbeddedPiAgent(
               thinkLevel = fallbackThinking;
               continue;
             }
+            // FIX: Throw FailoverError for prompt errors when fallbacks configured
+            // This enables model fallback for quota/rate limit errors during prompt submission
+            const promptFallbackConfigured =
+              (params.config?.agents?.defaults?.model?.fallbacks?.length ?? 0) > 0;
+            if (promptFallbackConfigured && isFailoverErrorMessage(errorText)) {
+              throw new FailoverError(errorText, {
+                reason: promptFailoverReason ?? "unknown",
+                provider,
+                model: modelId,
+                profileId: lastProfileId,
+                status: resolveFailoverStatus(promptFailoverReason ?? "unknown"),
+              });
+            }
             throw promptError;
           }
 
@@ -340,6 +391,26 @@ export async function runEmbeddedPiAgent(
           const failoverFailure = isFailoverAssistantError(lastAssistant);
           const assistantFailoverReason = classifyFailoverReason(lastAssistant?.errorMessage ?? "");
           const cloudCodeAssistFormatError = attempt.cloudCodeAssistFormatError;
+          const imageDimensionError = parseImageDimensionError(lastAssistant?.errorMessage ?? "");
+
+          if (imageDimensionError && lastProfileId) {
+            const details = [
+              imageDimensionError.messageIndex !== undefined
+                ? `message=${imageDimensionError.messageIndex}`
+                : null,
+              imageDimensionError.contentIndex !== undefined
+                ? `content=${imageDimensionError.contentIndex}`
+                : null,
+              imageDimensionError.maxDimensionPx !== undefined
+                ? `limit=${imageDimensionError.maxDimensionPx}px`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" ");
+            log.warn(
+              `Profile ${lastProfileId} rejected image payload${details ? ` (${details})` : ""}.`,
+            );
+          }
 
           // Treat timeout as potential rate limit (Antigravity hangs on rate limit)
           const shouldRotate = (!aborted && failoverFailure) || timedOut;
@@ -414,6 +485,7 @@ export async function runEmbeddedPiAgent(
             assistantTexts: attempt.assistantTexts,
             toolMetas: attempt.toolMetas,
             lastAssistant: attempt.lastAssistant,
+            lastToolError: attempt.lastToolError,
             config: params.config,
             sessionKey: params.sessionKey ?? params.sessionId,
             verboseLevel: params.verboseLevel,
@@ -443,6 +515,17 @@ export async function runEmbeddedPiAgent(
               agentMeta,
               aborted,
               systemPromptReport: attempt.systemPromptReport,
+              // Handle client tool calls (OpenResponses hosted tools)
+              stopReason: attempt.clientToolCall ? "tool_calls" : undefined,
+              pendingToolCalls: attempt.clientToolCall
+                ? [
+                    {
+                      id: `call_${Date.now()}`,
+                      name: attempt.clientToolCall.name,
+                      arguments: JSON.stringify(attempt.clientToolCall.params),
+                    },
+                  ]
+                : undefined,
             },
             didSendViaMessagingTool: attempt.didSendViaMessagingTool,
             messagingToolSentTexts: attempt.messagingToolSentTexts,

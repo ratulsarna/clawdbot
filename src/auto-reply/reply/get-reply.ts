@@ -20,6 +20,7 @@ import { runPreparedReply } from "./get-reply-run.js";
 import { finalizeInboundContext } from "./inbound-context.js";
 import { createInternalHookEvent, triggerInternalHook } from "../../hooks/internal-hooks.js";
 import { initSessionState } from "./session.js";
+import { applyResetModelOverride } from "./session-reset-model.js";
 import { stageSandboxMedia } from "./stage-sandbox-media.js";
 import { createTypingController } from "./typing.js";
 
@@ -29,8 +30,11 @@ export async function getReplyFromConfig(
   configOverride?: ClawdbotConfig,
 ): Promise<ReplyPayload | ReplyPayload[] | undefined> {
   const cfg = configOverride ?? loadConfig();
+  const targetSessionKey =
+    ctx.CommandSource === "native" ? ctx.CommandTargetSessionKey?.trim() : undefined;
+  const agentSessionKey = targetSessionKey || ctx.SessionKey;
   const agentId = resolveSessionAgentId({
-    sessionKey: ctx.SessionKey,
+    sessionKey: agentSessionKey,
     config: cfg,
   });
   const agentCfg = cfg.agents?.defaults;
@@ -105,6 +109,7 @@ export async function getReplyFromConfig(
     sessionId,
     isNewSession,
     sessionStartReason,
+    resetTriggered,
     systemSent,
     abortedLastRun,
     storePath,
@@ -112,6 +117,7 @@ export async function getReplyFromConfig(
     groupResolution,
     isGroup,
     triggerBodyNormalized,
+    bodyStripped,
   } = sessionState;
 
   // Fire session:start for the first user-visible turn of a session.
@@ -144,6 +150,20 @@ export async function getReplyFromConfig(
     }
   }
 
+  await applyResetModelOverride({
+    cfg,
+    resetTriggered,
+    bodyStripped,
+    sessionCtx,
+    ctx: finalized,
+    sessionEntry,
+    sessionStore,
+    sessionKey,
+    storePath,
+    defaultProvider,
+    defaultModel,
+    aliasIndex,
+  });
 
   const directiveResult = await resolveReplyDirectives({
     ctx: finalized,
@@ -190,6 +210,7 @@ export async function getReplyFromConfig(
     resolvedVerboseLevel,
     resolvedReasoningLevel,
     resolvedElevatedLevel,
+    execOverrides,
     blockStreamingEnabled,
     blockReplyChunking,
     resolvedBlockStreamingBreak,
@@ -210,6 +231,7 @@ export async function getReplyFromConfig(
     sessionCtx,
     cfg,
     agentId,
+    agentDir,
     sessionEntry,
     previousSessionEntry,
     sessionStore,
@@ -274,6 +296,7 @@ export async function getReplyFromConfig(
     resolvedVerboseLevel,
     resolvedReasoningLevel,
     resolvedElevatedLevel,
+    execOverrides,
     elevatedEnabled,
     elevatedAllowed,
     blockStreamingEnabled,
@@ -286,9 +309,11 @@ export async function getReplyFromConfig(
     perMessageQueueOptions,
     typing,
     opts,
+    defaultProvider,
     defaultModel,
     timeoutMs,
     isNewSession,
+    resetTriggered,
     systemSent,
     sessionEntry,
     sessionStore,

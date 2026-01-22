@@ -42,10 +42,20 @@ final class GatewayProcessManager {
     private var environmentRefreshTask: Task<Void, Never>?
     private var lastEnvironmentRefresh: Date?
     private var logRefreshTask: Task<Void, Never>?
+    #if DEBUG
+    private var testingConnection: GatewayConnection?
+    #endif
     private let logger = Logger(subsystem: "com.clawdbot", category: "gateway.process")
 
     private let logLimit = 20000 // characters to keep in-memory
     private let environmentRefreshMinInterval: TimeInterval = 30
+    private var connection: GatewayConnection {
+        #if DEBUG
+        return self.testingConnection ?? .shared
+        #else
+        return .shared
+        #endif
+    }
 
     func setActive(_ active: Bool) {
         // Remote mode should never spawn a local gateway; treat as stopped.
@@ -114,6 +124,9 @@ final class GatewayProcessManager {
         self.lastFailureReason = nil
         self.status = .stopped
         self.logger.info("gateway stop requested")
+        if CommandResolver.connectionModeIsRemote() {
+            return
+        }
         let bundlePath = Bundle.main.bundleURL.path
         Task {
             _ = await GatewayLaunchAgentManager.set(
@@ -121,6 +134,10 @@ final class GatewayProcessManager {
                 bundlePath: bundlePath,
                 port: GatewayEnvironment.gatewayPort())
         }
+    }
+
+    func clearLastFailure() {
+        self.lastFailureReason = nil
     }
 
     func refreshEnvironmentStatus(force: Bool = false) {
@@ -175,7 +192,7 @@ final class GatewayProcessManager {
         let hasListener = instance != nil
 
         let attemptAttach = {
-            try await GatewayConnection.shared.requestRaw(method: .health, timeoutMs: 2000)
+            try await self.connection.requestRaw(method: .health, timeoutMs: 2000)
         }
 
         for attempt in 0..<(hasListener ? 3 : 1) {
@@ -184,6 +201,7 @@ final class GatewayProcessManager {
                 let snap = decodeHealthSnapshot(from: data)
                 let details = self.describe(details: instanceText, port: port, snap: snap)
                 self.existingGatewayDetails = details
+                self.clearLastFailure()
                 self.status = .attachedExisting(details: details)
                 self.appendLog("[gateway] using existing instance: \(details)\n")
                 self.logger.info("gateway using existing instance details=\(details)")
@@ -307,9 +325,10 @@ final class GatewayProcessManager {
         while Date() < deadline {
             if !self.desiredActive { return }
             do {
-                _ = try await GatewayConnection.shared.requestRaw(method: .health, timeoutMs: 1500)
+                _ = try await self.connection.requestRaw(method: .health, timeoutMs: 1500)
                 let instance = await PortGuardian.shared.describe(port: port)
                 let details = instance.map { "pid \($0.pid)" }
+                self.clearLastFailure()
                 self.status = .running(details: details)
                 self.logger.info("gateway started details=\(details ?? "ok")")
                 self.refreshControlChannelIfNeeded(reason: "gateway started")
@@ -349,7 +368,8 @@ final class GatewayProcessManager {
         while Date() < deadline {
             if !self.desiredActive { return false }
             do {
-                _ = try await GatewayConnection.shared.requestRaw(method: .health, timeoutMs: 1500)
+                _ = try await self.connection.requestRaw(method: .health, timeoutMs: 1500)
+                self.clearLastFailure()
                 return true
             } catch {
                 try? await Task.sleep(nanoseconds: 300_000_000)
@@ -362,7 +382,7 @@ final class GatewayProcessManager {
 
     func clearLog() {
         self.log = ""
-        try? FileManager.default.removeItem(atPath: GatewayLaunchAgentManager.launchdGatewayLogPath())
+        try? FileManager().removeItem(atPath: GatewayLaunchAgentManager.launchdGatewayLogPath())
         self.logger.debug("gateway log cleared")
     }
 
@@ -375,10 +395,26 @@ final class GatewayProcessManager {
     }
 
     private nonisolated static func readGatewayLog(path: String, limit: Int) -> String {
-        guard FileManager.default.fileExists(atPath: path) else { return "" }
+        guard FileManager().fileExists(atPath: path) else { return "" }
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return "" }
         let text = String(data: data, encoding: .utf8) ?? ""
         if text.count <= limit { return text }
         return String(text.suffix(limit))
     }
 }
+
+#if DEBUG
+extension GatewayProcessManager {
+    func setTestingConnection(_ connection: GatewayConnection?) {
+        self.testingConnection = connection
+    }
+
+    func setTestingDesiredActive(_ active: Bool) {
+        self.desiredActive = active
+    }
+
+    func setTestingLastFailureReason(_ reason: String?) {
+        self.lastFailureReason = reason
+    }
+}
+#endif

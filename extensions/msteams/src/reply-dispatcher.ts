@@ -1,8 +1,10 @@
-import { resolveEffectiveMessagesConfig, resolveHumanDelayConfig } from "../../../src/agents/identity.js";
-import { createReplyDispatcherWithTyping } from "../../../src/auto-reply/reply/reply-dispatcher.js";
-import type { ClawdbotConfig, MSTeamsReplyStyle } from "../../../src/config/types.js";
-import { danger } from "../../../src/globals.js";
-import type { RuntimeEnv } from "../../../src/runtime.js";
+import {
+  resolveChannelMediaMaxBytes,
+  type ClawdbotConfig,
+  type MSTeamsReplyStyle,
+  type RuntimeEnv,
+} from "clawdbot/plugin-sdk";
+import type { MSTeamsAccessTokenProvider } from "./attachments/types.js";
 import type { StoredConversationReference } from "./conversation-store.js";
 import {
   classifyMSTeamsSendError,
@@ -16,6 +18,7 @@ import {
 } from "./messenger.js";
 import type { MSTeamsMonitorLogger } from "./monitor-types.js";
 import type { MSTeamsTurnContext } from "./sdk-types.js";
+import { getMSTeamsRuntime } from "./runtime.js";
 
 export function createMSTeamsReplyDispatcher(params: {
   cfg: ClawdbotConfig;
@@ -29,7 +32,12 @@ export function createMSTeamsReplyDispatcher(params: {
   replyStyle: MSTeamsReplyStyle;
   textLimit: number;
   onSentMessageIds?: (ids: string[]) => void;
+  /** Token provider for OneDrive/SharePoint uploads in group chats/channels */
+  tokenProvider?: MSTeamsAccessTokenProvider;
+  /** SharePoint site ID for file uploads in group chats/channels */
+  sharePointSiteId?: string;
 }) {
+  const core = getMSTeamsRuntime();
   const sendTypingIndicator = async () => {
     try {
       await params.context.sendActivities([{ type: "typing" }]);
@@ -38,14 +46,21 @@ export function createMSTeamsReplyDispatcher(params: {
     }
   };
 
-  return createReplyDispatcherWithTyping({
-    responsePrefix: resolveEffectiveMessagesConfig(params.cfg, params.agentId).responsePrefix,
-    humanDelay: resolveHumanDelayConfig(params.cfg, params.agentId),
+  return core.channel.reply.createReplyDispatcherWithTyping({
+    responsePrefix: core.channel.reply.resolveEffectiveMessagesConfig(
+      params.cfg,
+      params.agentId,
+    ).responsePrefix,
+    humanDelay: core.channel.reply.resolveHumanDelayConfig(params.cfg, params.agentId),
     deliver: async (payload) => {
       const messages = renderReplyPayloadsToMessages([payload], {
         textChunkLimit: params.textLimit,
         chunkText: true,
         mediaMode: "split",
+      });
+      const mediaMaxBytes = resolveChannelMediaMaxBytes({
+        cfg: params.cfg,
+        resolveChannelLimitMb: ({ cfg }) => cfg.channels?.msteams?.mediaMaxMb,
       });
       const ids = await sendMSTeamsMessages({
         replyStyle: params.replyStyle,
@@ -62,6 +77,9 @@ export function createMSTeamsReplyDispatcher(params: {
             ...event,
           });
         },
+        tokenProvider: params.tokenProvider,
+        sharePointSiteId: params.sharePointSiteId,
+        mediaMaxBytes,
       });
       if (ids.length > 0) params.onSentMessageIds?.(ids);
     },
@@ -70,7 +88,7 @@ export function createMSTeamsReplyDispatcher(params: {
       const classification = classifyMSTeamsSendError(err);
       const hint = formatMSTeamsSendErrorHint(classification);
       params.runtime.error?.(
-        danger(`msteams ${info.kind} reply failed: ${errMsg}${hint ? ` (${hint})` : ""}`),
+        `msteams ${info.kind} reply failed: ${errMsg}${hint ? ` (${hint})` : ""}`,
       );
       params.log.error("reply failed", {
         kind: info.kind,

@@ -15,6 +15,7 @@ export function buildEmbeddedSystemPrompt(params: {
   reasoningTagHint: boolean;
   heartbeatPrompt?: string;
   skillsPrompt?: string;
+  docsPath?: string;
   reactionGuidance?: {
     level: "minimal" | "extensive";
     channel: string;
@@ -22,6 +23,7 @@ export function buildEmbeddedSystemPrompt(params: {
   /** Controls which hardcoded sections to include. Defaults to "full". */
   promptMode?: PromptMode;
   runtimeInfo: {
+    agentId?: string;
     host: string;
     os: string;
     arch: string;
@@ -30,7 +32,10 @@ export function buildEmbeddedSystemPrompt(params: {
     provider?: string;
     capabilities?: string[];
     channel?: string;
+    /** Supported message actions for the current channel (e.g., react, edit, unsend) */
+    channelActions?: string[];
   };
+  messageToolHints?: string[];
   sandboxInfo?: EmbeddedSandboxInfo;
   tools: AgentTool[];
   modelAliasLines: string[];
@@ -48,9 +53,11 @@ export function buildEmbeddedSystemPrompt(params: {
     reasoningTagHint: params.reasoningTagHint,
     heartbeatPrompt: params.heartbeatPrompt,
     skillsPrompt: params.skillsPrompt,
+    docsPath: params.docsPath,
     reactionGuidance: params.reactionGuidance,
     promptMode: params.promptMode,
     runtimeInfo: params.runtimeInfo,
+    messageToolHints: params.messageToolHints,
     sandboxInfo: params.sandboxInfo,
     toolNames: params.tools.map((tool) => tool.name),
     toolSummaries: buildToolSummaryMap(params.tools),

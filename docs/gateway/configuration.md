@@ -17,6 +17,19 @@ If the file is missing, Clawdbot uses safe-ish defaults (embedded Pi agent + per
 
 > **New to configuration?** Check out the [Configuration Examples](/gateway/configuration-examples) guide for complete examples with detailed explanations!
 
+## Strict config validation
+
+Clawdbot only accepts configurations that fully match the schema.
+Unknown keys, malformed types, or invalid values cause the Gateway to **refuse to start** for safety.
+
+When validation fails:
+- The Gateway does not boot.
+- Only diagnostic commands are allowed (for example: `clawdbot doctor`, `clawdbot logs`, `clawdbot health`, `clawdbot status`, `clawdbot service`, `clawdbot help`).
+- Run `clawdbot doctor` to see the exact issues.
+- Run `clawdbot doctor --fix` (or `--yes`) to apply migrations/repairs.
+
+Doctor never writes changes unless you explicitly opt into `--fix`/`--yes`.
+
 ## Schema + UI hints
 
 The Gateway exposes a JSON Schema representation of the config via `config.schema` for UI editors.
@@ -387,12 +400,26 @@ Optional per-agent identity used for defaults and UX. This is written by the mac
 If set, Clawdbot derives defaults (only when you haven’t set them explicitly):
 - `messages.ackReaction` from the **active agent**’s `identity.emoji` (falls back to 👀)
 - `agents.list[].groupChat.mentionPatterns` from the agent’s `identity.name`/`identity.emoji` (so “@Samantha” works in groups across Telegram/Slack/Discord/iMessage/WhatsApp)
+- `identity.avatar` accepts a workspace-relative image path or a remote URL/data URL. Local files must live inside the agent workspace.
+
+`identity.avatar` accepts:
+- Workspace-relative path (must stay within the agent workspace)
+- `http(s)` URL
+- `data:` URI
 
 ```json5
 {
   agents: {
     list: [
-      { id: "main", identity: { name: "Samantha", theme: "helpful sloth", emoji: "🦥" } }
+      {
+        id: "main",
+        identity: {
+          name: "Samantha",
+          theme: "helpful sloth",
+          emoji: "🦥",
+          avatar: "avatars/samantha.png"
+        }
+      }
     ]
   }
 }
@@ -678,10 +705,11 @@ Notes:
 - `"open"`: groups bypass allowlists; mention-gating still applies.
 - `"disabled"`: block all group/room messages.
 - `"allowlist"`: only allow groups/rooms that match the configured allowlist.
+- `channels.defaults.groupPolicy` sets the default when a provider’s `groupPolicy` is unset.
 - WhatsApp/Telegram/Signal/iMessage/Microsoft Teams use `groupAllowFrom` (fallback: explicit `allowFrom`).
 - Discord/Slack use channel allowlists (`channels.discord.guilds.*.channels`, `channels.slack.channels`).
 - Group DMs (Discord/Slack) are still controlled by `dm.groupEnabled` + `dm.groupChannels`.
-- Default is `groupPolicy: "allowlist"`; if no allowlist is configured, group messages are blocked.
+- Default is `groupPolicy: "allowlist"` (unless overridden by `channels.defaults.groupPolicy`); if no allowlist is configured, group messages are blocked.
 
 ### Multi-agent routing (`agents.list` + `bindings`)
 
@@ -1252,6 +1280,18 @@ Default: `~/clawd`.
 If `agents.defaults.sandbox` is enabled, non-main sessions can override this with their
 own per-scope workspaces under `agents.defaults.sandbox.workspaceRoot`.
 
+### `agents.defaults.repoRoot`
+
+Optional repository root to show in the system prompt’s Runtime line. If unset, Clawdbot
+tries to detect a `.git` directory by walking upward from the workspace (and current
+working directory). The path must exist to be used.
+
+```json5
+{
+  agents: { defaults: { repoRoot: "~/Projects/clawdbot" } }
+}
+```
+
 ### `agents.defaults.skipBootstrap`
 
 Disables automatic creation of the workspace bootstrap files (`AGENTS.md`, `SOUL.md`, `TOOLS.md`, `IDENTITY.md`, `USER.md`, and `BOOTSTRAP.md`).
@@ -1728,8 +1768,9 @@ Z.AI models are available as `zai/<model>` (e.g. `zai/glm-4.7`) and require
   `30m`. Set `0m` to disable.
 - `model`: optional override model for heartbeat runs (`provider/model`).
 - `includeReasoning`: when `true`, heartbeats will also deliver the separate `Reasoning:` message when available (same shape as `/reasoning on`). Default: `false`.
-- `target`: optional delivery channel (`last`, `whatsapp`, `telegram`, `discord`, `slack`, `signal`, `imessage`, `none`). Default: `last`.
+- `session`: optional session key to control which session the heartbeat runs in. Default: `main`.
 - `to`: optional recipient override (channel-specific id, e.g. E.164 for WhatsApp, chat id for Telegram).
+- `target`: optional delivery channel (`last`, `whatsapp`, `telegram`, `discord`, `slack`, `msteams`, `signal`, `imessage`, `none`). Default: `last`.
 - `prompt`: optional override for the heartbeat body (default: `Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.`). Overrides are sent verbatim; include a `Read HEARTBEAT.md` line if you still want the file read.
 - `ackMaxChars`: max chars allowed after `HEARTBEAT_OK` before delivery (default: 300).
 
@@ -1954,7 +1995,7 @@ Per-agent override (further restrict):
 
 Notes:
 - `tools.elevated` is the global baseline. `agents.list[].tools.elevated` can only further restrict (both must allow).
-- `/elevated on|off` stores state per session key; inline directives apply to a single message.
+- `/elevated on|off|ask|full` stores state per session key; inline directives apply to a single message.
 - Elevated `exec` runs on the host and bypasses sandboxing.
 - Tool policy still applies; if `exec` is denied, elevated cannot be used.
 
@@ -1988,6 +2029,9 @@ cross-session isolation. Use `scope: "session"` for per-session isolation.
 
 Legacy: `perSession` is still supported (`true` → `scope: "session"`,
 `false` → `scope: "shared"`).
+
+`setupCommand` runs **once** after the container is created (inside the container via `sh -lc`).
+For package installs, ensure network egress, a writable root FS, and a root user.
 
 ```json5
 {
@@ -2415,7 +2459,7 @@ Notes:
 
 ### `session`
 
-Controls session scoping, idle expiry, reset triggers, and where the session store is written.
+Controls session scoping, reset policy, reset triggers, and where the session store is written.
 
 ```json5
 {
@@ -2425,7 +2469,16 @@ Controls session scoping, idle expiry, reset triggers, and where the session sto
     identityLinks: {
       alice: ["telegram:123456789", "discord:987654321012345678"]
     },
-    idleMinutes: 60,
+    reset: {
+      mode: "daily",
+      atHour: 4,
+      idleMinutes: 60
+    },
+    resetByType: {
+      thread: { mode: "daily", atHour: 4 },
+      dm: { mode: "idle", idleMinutes: 240 },
+      group: { mode: "idle", idleMinutes: 120 }
+    },
     resetTriggers: ["/new", "/reset"],
     // Default is already per-agent under ~/.clawdbot/agents/<agentId>/sessions/sessions.json
     // You can override with {agentId} templating:
@@ -2436,12 +2489,12 @@ Controls session scoping, idle expiry, reset triggers, and where the session sto
       // Max ping-pong reply turns between requester/target (0–5).
       maxPingPongTurns: 5
     },
-        sendPolicy: {
-          rules: [
+    sendPolicy: {
+      rules: [
         { action: "deny", match: { channel: "discord", chatType: "group" } }
-          ],
-          default: "allow"
-        }
+      ],
+      default: "allow"
+    }
   }
 }
 ```
@@ -2455,6 +2508,13 @@ Fields:
   - `per-channel-peer`: isolate DMs per channel + sender (recommended for multi-user inboxes).
 - `identityLinks`: map canonical ids to provider-prefixed peers so the same person shares a DM session across channels when using `per-peer` or `per-channel-peer`.
   - Example: `alice: ["telegram:123456789", "discord:987654321012345678"]`.
+- `reset`: primary reset policy. Defaults to daily resets at 4:00 AM local time on the gateway host.
+  - `mode`: `daily` or `idle` (default: `daily` when `reset` is present).
+  - `atHour`: local hour (0-23) for the daily reset boundary.
+  - `idleMinutes`: sliding idle window in minutes. When daily + idle are both configured, whichever expires first wins.
+- `resetByType`: per-session overrides for `dm`, `group`, and `thread`.
+  - If you only set legacy `session.idleMinutes` without any `reset`/`resetByType`, Clawdbot stays in idle-only mode for backward compatibility.
+- `heartbeatIdleMinutes`: optional idle override for heartbeat checks (daily reset still applies when enabled).
 - `agentToAgent.maxPingPongTurns`: max reply-back turns between requester/target (0–5, default 5).
 - `sendPolicy.default`: `allow` or `deny` fallback when no rule matches.
 - `sendPolicy.rules[]`: match by `channel`, `chatType` (`direct|group|room`), or `keyPrefix` (e.g. `cron:`). First deny wins; otherwise allow.
@@ -2594,7 +2654,13 @@ If unset, clients fall back to a muted light-blue.
 ```json5
 {
   ui: {
-    seamColor: "#FF4500" // hex (RRGGBB or #RRGGBB)
+    seamColor: "#FF4500", // hex (RRGGBB or #RRGGBB)
+    // Optional: Control UI assistant identity override.
+    // If unset, the Control UI uses the active agent identity (config or IDENTITY.md).
+    assistant: {
+      name: "Clawdbot",
+      avatar: "CB" // emoji, short text, or image URL/data URI
+    }
   }
 }
 ```
@@ -2625,6 +2691,8 @@ Control UI base path:
 - `gateway.controlUi.basePath` sets the URL prefix where the Control UI is served.
 - Examples: `"/ui"`, `"/clawdbot"`, `"/apps/clawdbot"`.
 - Default: root (`/`) (unchanged).
+- `gateway.controlUi.allowInsecureAuth` allows token-only auth over **HTTP** (no device identity).
+  Default: `false`. Prefer HTTPS (Tailscale Serve) or `127.0.0.1`.
 
 Related docs:
 - [Control UI](/web/control-ui)

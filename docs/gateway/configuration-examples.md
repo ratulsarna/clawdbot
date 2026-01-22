@@ -146,8 +146,14 @@ Save to `~/.clawdbot/clawdbot.json` and you can DM the bot from that number.
   // Session behavior
   session: {
     scope: "per-sender",
-    idleMinutes: 60,
-    heartbeatIdleMinutes: 120,
+    reset: {
+      mode: "daily",
+      atHour: 4,
+      idleMinutes: 60
+    },
+    resetByChannel: {
+      discord: { mode: "idle", idleMinutes: 10080 }
+    },
     resetTriggers: ["/new", "/reset"],
     store: "~/.clawdbot/agents/default/sessions/sessions.json",
     typingIntervalSeconds: 5,
@@ -257,10 +263,9 @@ Save to `~/.clawdbot/clawdbot.json` and you can DM the bot from that number.
         ackMaxChars: 300
       },
       memorySearch: {
-        provider: "openai",
-        model: "text-embedding-004",
+        provider: "gemini",
+        model: "gemini-embedding-001",
         remote: {
-          baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
           apiKey: "${GEMINI_API_KEY}"
         }
       },

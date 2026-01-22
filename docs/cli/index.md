@@ -23,15 +23,18 @@ This page describes the current CLI behavior. If commands change, update this do
 - [`message`](/cli/message)
 - [`agent`](/cli/agent)
 - [`agents`](/cli/agents)
+- [`acp`](/cli/acp)
 - [`status`](/cli/status)
 - [`health`](/cli/health)
 - [`sessions`](/cli/sessions)
 - [`gateway`](/cli/gateway)
-- [`daemon`](/cli/daemon)
 - [`logs`](/cli/logs)
 - [`models`](/cli/models)
 - [`memory`](/cli/memory)
 - [`nodes`](/cli/nodes)
+- [`devices`](/cli/devices)
+- [`node`](/cli/node)
+- [`approvals`](/cli/approvals)
 - [`sandbox`](/cli/sandbox)
 - [`tui`](/cli/tui)
 - [`browser`](/cli/browser)
@@ -125,6 +128,7 @@ clawdbot [--dev] [--profile <name>] <command>
     list
     add
     delete
+  acp
   status
   health
   sessions
@@ -132,14 +136,14 @@ clawdbot [--dev] [--profile <name>] <command>
     call
     health
     status
+    probe
     discover
-  daemon
-    status
     install
     uninstall
     start
     stop
     restart
+    run
   logs
   models
     list
@@ -168,21 +172,19 @@ clawdbot [--dev] [--profile <name>] <command>
     runs
     run
   nodes
-    status
-    describe
-    list
-    pending
-    approve
-    reject
-    rename
-    invoke
+  devices
+  node
     run
-    notify
-    camera list|snap|clip
-    canvas snapshot|present|hide|navigate|eval
-    canvas a2ui push|reset
-    screen record
-    location get
+    status
+    install
+    uninstall
+    start
+    stop
+    restart
+  approvals
+    get
+    set
+    allowlist add|remove
   browser
     status
     start
@@ -308,7 +310,7 @@ Options:
 - `--minimax-api-key <key>`
 - `--opencode-zen-api-key <key>`
 - `--gateway-port <port>`
-- `--gateway-bind <loopback|lan|tailnet|auto>`
+- `--gateway-bind <loopback|lan|tailnet|auto|custom>`
 - `--gateway-auth <off|token|password>`
 - `--gateway-token <token>`
 - `--gateway-password <password>`
@@ -506,6 +508,11 @@ Options:
 - `--force`
 - `--json`
 
+### `acp`
+Run the ACP bridge that connects IDEs to the Gateway.
+
+See [`acp`](/cli/acp) for full options and examples.
+
 ### `status`
 Show linked session health and recent recipients.
 
@@ -518,11 +525,14 @@ Options:
 - `--verbose`
 - `--debug` (alias for `--verbose`)
 
+Notes:
+- Overview includes Gateway + node host service status when available.
+
 ### Usage tracking
 Clawdbot can surface provider usage/quota when OAuth/API creds are available.
 
 Surfaces:
-- `/status` (alias: `/usage`; adds a short usage line when available)
+- `/status` (adds a short provider usage line when available)
 - `clawdbot status --usage` (prints full provider breakdown)
 - macOS menu bar (Usage section under Context)
 
@@ -586,7 +596,7 @@ Run the WebSocket Gateway.
 
 Options:
 - `--port <port>`
-- `--bind <loopback|tailnet|lan|auto>`
+- `--bind <loopback|tailnet|lan|auto|custom>`
 - `--token <token>`
 - `--auth <token|password>`
 - `--password <password>`
@@ -603,25 +613,25 @@ Options:
 - `--raw-stream`
 - `--raw-stream-path <path>`
 
-### `daemon`
+### `gateway service`
 Manage the Gateway service (launchd/systemd/schtasks).
 
 Subcommands:
-- `daemon status` (probes the Gateway RPC by default)
-- `daemon install` (service install)
-- `daemon uninstall`
-- `daemon start`
-- `daemon stop`
-- `daemon restart`
+- `gateway status` (probes the Gateway RPC by default)
+- `gateway install` (service install)
+- `gateway uninstall`
+- `gateway start`
+- `gateway stop`
+- `gateway restart`
 
 Notes:
-- `daemon status` probes the Gateway RPC by default using the daemon’s resolved port/config (override with `--url/--token/--password`).
-- `daemon status` supports `--no-probe`, `--deep`, and `--json` for scripting.
-- `daemon status` also surfaces legacy or extra gateway services when it can detect them (`--deep` adds system-level scans). Profile-named Clawdbot services are treated as first-class and aren't flagged as "extra".
-- `daemon status` prints which config path the CLI uses vs which config the daemon likely uses (service env), plus the resolved probe target URL.
-- `daemon install|uninstall|start|stop|restart` support `--json` for scripting (default output stays human-friendly).
-- `daemon install` defaults to Node runtime; bun is **not recommended** (WhatsApp/Telegram bugs).
-- `daemon install` options: `--port`, `--runtime`, `--token`, `--force`, `--json`.
+- `gateway status` probes the Gateway RPC by default using the service’s resolved port/config (override with `--url/--token/--password`).
+- `gateway status` supports `--no-probe`, `--deep`, and `--json` for scripting.
+- `gateway status` also surfaces legacy or extra gateway services when it can detect them (`--deep` adds system-level scans). Profile-named Clawdbot services are treated as first-class and aren't flagged as "extra".
+- `gateway status` prints which config path the CLI uses vs which config the service likely uses (service env), plus the resolved probe target URL.
+- `gateway install|uninstall|start|stop|restart` support `--json` for scripting (default output stays human-friendly).
+- `gateway install` defaults to Node runtime; bun is **not recommended** (WhatsApp/Telegram bugs).
+- `gateway install` options: `--port`, `--runtime`, `--token`, `--force`, `--json`.
 
 ### `logs`
 Tail Gateway file logs via RPC.
@@ -640,13 +650,16 @@ clawdbot logs --no-color
 ```
 
 ### `gateway <subcommand>`
-Gateway RPC helpers (use `--url`, `--token`, `--password`, `--timeout`, `--expect-final` for each).
+Gateway CLI helpers (use `--url`, `--token`, `--password`, `--timeout`, `--expect-final` for RPC subcommands).
 
 Subcommands:
 - `gateway call <method> [--params <json>]`
 - `gateway health`
 - `gateway status`
+- `gateway probe`
 - `gateway discover`
+- `gateway install|uninstall|start|stop|restart`
+- `gateway run`
 
 Common RPCs:
 - `config.apply` (validate + write config + restart + wake)
@@ -772,6 +785,20 @@ Subcommands:
 
 All `cron` commands accept `--url`, `--token`, `--timeout`, `--expect-final`.
 
+## Node host
+
+`node` runs a **headless node host** or manages it as a background service. See
+[`clawdbot node`](/cli/node).
+
+Subcommands:
+- `node run --host <gateway-host> --port 18790`
+- `node status`
+- `node install [--host <gateway-host>] [--port <port>] [--tls] [--tls-fingerprint <sha256>] [--node-id <id>] [--display-name <name>] [--runtime <node|bun>] [--force]`
+- `node uninstall`
+- `node run`
+- `node stop`
+- `node restart`
+
 ## Nodes
 
 `nodes` talks to the Gateway and targets paired nodes. See [/nodes](/nodes).
@@ -780,15 +807,15 @@ Common options:
 - `--url`, `--token`, `--timeout`, `--json`
 
 Subcommands:
-- `nodes status`
+- `nodes status [--connected] [--last-connected <duration>]`
 - `nodes describe --node <id|name|ip>`
-- `nodes list`
+- `nodes list [--connected] [--last-connected <duration>]`
 - `nodes pending`
 - `nodes approve <requestId>`
 - `nodes reject <requestId>`
 - `nodes rename --node <id|name|ip> --name <displayName>`
 - `nodes invoke --node <id|name|ip> --command <command> [--params <json>] [--invoke-timeout <ms>] [--idempotency-key <key>]`
-- `nodes run --node <id|name|ip> [--cwd <path>] [--env KEY=VAL] [--command-timeout <ms>] [--needs-screen-recording] [--invoke-timeout <ms>] <command...>` (mac only)
+- `nodes run --node <id|name|ip> [--cwd <path>] [--env KEY=VAL] [--command-timeout <ms>] [--needs-screen-recording] [--invoke-timeout <ms>] <command...>` (mac node or headless node host)
 - `nodes notify --node <id|name|ip> [--title <text>] [--body <text>] [--sound <name>] [--priority <passive|active|timeSensitive>] [--delivery <system|overlay|auto>] [--invoke-timeout <ms>]` (mac only)
 
 Camera:

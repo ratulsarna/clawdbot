@@ -5,6 +5,7 @@ import { createAgentSession, SessionManager, SettingsManager } from "@mariozechn
 
 import { resolveHeartbeatPrompt } from "../../auto-reply/heartbeat.js";
 import type { ReasoningLevel, ThinkLevel } from "../../auto-reply/thinking.js";
+import { listChannelSupportedActions, resolveChannelMessageToolHints } from "../channel-tools.js";
 import { resolveChannelCapabilities } from "../../config/channel-capabilities.js";
 import type { ClawdbotConfig } from "../../config/config.js";
 import { getMachineDisplayName } from "../../infra/machine-name.js";
@@ -16,15 +17,14 @@ import { isReasoningTagProvider } from "../../utils/provider-utils.js";
 import { resolveUserPath } from "../../utils.js";
 import { resolveClawdbotAgentDir } from "../agent-paths.js";
 import { resolveSessionAgentIds } from "../agent-scope.js";
+import { makeBootstrapWarn, resolveBootstrapContextForRun } from "../bootstrap-files.js";
+import { resolveClawdbotDocsPath } from "../docs-path.js";
 import type { ExecElevatedDefaults } from "../bash-tools.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../defaults.js";
 import { getApiKeyForModel, resolveModelAuthMode } from "../model-auth.js";
 import { ensureClawdbotModelsJson } from "../models-config.js";
 import {
-  buildBootstrapContextFiles,
-  type EmbeddedContextFile,
   ensureSessionHeader,
-  resolveBootstrapMaxChars,
   validateAnthropicTurns,
   validateGeminiTurns,
 } from "../pi-embedded-helpers.js";
@@ -43,7 +43,6 @@ import {
   resolveSkillsPromptForRun,
   type SkillSnapshot,
 } from "../skills.js";
-import { filterBootstrapFilesForSession, loadWorkspaceBootstrapFiles } from "../workspace.js";
 import { buildEmbeddedExtensionPaths } from "./extensions.js";
 import {
   logToolSchemasForGoogle,
@@ -117,7 +116,13 @@ export async function compactEmbeddedPiSession(params: {
           agentDir,
         });
 
-        if (model.provider === "github-copilot") {
+        if (!apiKeyInfo.apiKey) {
+          if (apiKeyInfo.mode !== "aws-sdk") {
+            throw new Error(
+              `No API key resolved for provider "${model.provider}" (auth mode: ${apiKeyInfo.mode}).`,
+            );
+          }
+        } else if (model.provider === "github-copilot") {
           const { resolveCopilotApiToken } =
             await import("../../providers/github-copilot-token.js");
           const copilotToken = await resolveCopilotApiToken({
@@ -178,14 +183,13 @@ export async function compactEmbeddedPiSession(params: {
           workspaceDir: effectiveWorkspace,
         });
 
-        const bootstrapFiles = filterBootstrapFilesForSession(
-          await loadWorkspaceBootstrapFiles(effectiveWorkspace),
-          params.sessionKey ?? params.sessionId,
-        );
         const sessionLabel = params.sessionKey ?? params.sessionId;
-        const contextFiles: EmbeddedContextFile[] = buildBootstrapContextFiles(bootstrapFiles, {
-          maxChars: resolveBootstrapMaxChars(params.config),
-          warn: (message) => log.warn(`${message} (sessionKey=${sessionLabel})`),
+        const { contextFiles } = await resolveBootstrapContextForRun({
+          workspaceDir: effectiveWorkspace,
+          config: params.config,
+          sessionKey: params.sessionKey,
+          sessionId: params.sessionId,
+          warn: makeBootstrapWarn({ sessionLabel, warn: (message) => log.warn(message) }),
         });
         const runAbortController = new AbortController();
         const toolsRaw = createClawdbotCodingTools({
@@ -234,6 +238,21 @@ export async function compactEmbeddedPiSession(params: {
             }
           }
         }
+        // Resolve channel-specific message actions for system prompt
+        const channelActions = runtimeChannel
+          ? listChannelSupportedActions({
+              cfg: params.config,
+              channel: runtimeChannel,
+            })
+          : undefined;
+        const messageToolHints = runtimeChannel
+          ? resolveChannelMessageToolHints({
+              cfg: params.config,
+              channel: runtimeChannel,
+              accountId: params.agentAccountId,
+            })
+          : undefined;
+
         const runtimeInfo = {
           host: machineName,
           os: `${os.type()} ${os.release()}`,
@@ -242,6 +261,7 @@ export async function compactEmbeddedPiSession(params: {
           model: `${provider}/${modelId}`,
           channel: runtimeChannel,
           capabilities: runtimeCapabilities,
+          channelActions,
         };
         const sandboxInfo = buildEmbeddedSandboxInfo(sandbox, params.bashElevated);
         const reasoningTagHint = isReasoningTagProvider(provider);
@@ -254,6 +274,12 @@ export async function compactEmbeddedPiSession(params: {
         });
         const isDefaultAgent = sessionAgentId === defaultAgentId;
         const promptMode = isSubagentSessionKey(params.sessionKey) ? "minimal" : "full";
+        const docsPath = await resolveClawdbotDocsPath({
+          workspaceDir: effectiveWorkspace,
+          argv1: process.argv[1],
+          cwd: process.cwd(),
+          moduleUrl: import.meta.url,
+        });
         const appendPrompt = buildEmbeddedSystemPrompt({
           workspaceDir: effectiveWorkspace,
           defaultThinkLevel: params.thinkLevel,
@@ -265,8 +291,10 @@ export async function compactEmbeddedPiSession(params: {
             ? resolveHeartbeatPrompt(params.config?.agents?.defaults?.heartbeat?.prompt)
             : undefined,
           skillsPrompt,
+          docsPath: docsPath ?? undefined,
           promptMode,
           runtimeInfo,
+          messageToolHints,
           sandboxInfo,
           tools,
           modelAliasLines: buildModelAliasLines(params.config),
@@ -282,7 +310,10 @@ export async function compactEmbeddedPiSession(params: {
         });
         try {
           await prewarmSessionFile(params.sessionFile);
-          const sessionManager = guardSessionManager(SessionManager.open(params.sessionFile));
+          const sessionManager = guardSessionManager(SessionManager.open(params.sessionFile), {
+            agentId: sessionAgentId,
+            sessionKey: params.sessionKey,
+          });
           trackSessionManagerAccess(params.sessionFile);
           const settingsManager = SettingsManager.create(effectiveWorkspace, agentDir);
           ensurePiCompactionReserveTokens({

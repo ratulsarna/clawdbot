@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   buildCommandText,
@@ -10,17 +10,29 @@ import {
   normalizeCommandBody,
   shouldHandleTextCommands,
 } from "./commands-registry.js";
+import { setActivePluginRegistry } from "../plugins/runtime.js";
+import { createTestRegistry } from "../test-utils/channel-plugins.js";
+
+beforeEach(() => {
+  setActivePluginRegistry(createTestRegistry([]));
+});
+
+afterEach(() => {
+  setActivePluginRegistry(createTestRegistry([]));
+});
 
 describe("commands registry", () => {
   it("builds command text with args", () => {
     expect(buildCommandText("status")).toBe("/status");
     expect(buildCommandText("model", "gpt-5")).toBe("/model gpt-5");
+    expect(buildCommandText("models")).toBe("/models");
   });
 
   it("exposes native specs", () => {
     const specs = listNativeCommandSpecs();
     expect(specs.find((spec) => spec.name === "help")).toBeTruthy();
     expect(specs.find((spec) => spec.name === "stop")).toBeTruthy();
+    expect(specs.find((spec) => spec.name === "skill")).toBeTruthy();
     expect(specs.find((spec) => spec.name === "whoami")).toBeTruthy();
     expect(specs.find((spec) => spec.name === "compact")).toBeFalsy();
   });
@@ -71,6 +83,7 @@ describe("commands registry", () => {
   it("detects known text commands", () => {
     const detection = getCommandDetection();
     expect(detection.exact.has("/commands")).toBe(true);
+    expect(detection.exact.has("/skill")).toBe(true);
     expect(detection.exact.has("/compact")).toBe(true);
     expect(detection.exact.has("/whoami")).toBe(true);
     expect(detection.exact.has("/id")).toBe(true);

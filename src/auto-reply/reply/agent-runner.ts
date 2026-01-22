@@ -18,9 +18,9 @@ import {
 import type { TypingMode } from "../../config/types.js";
 import { logVerbose } from "../../globals.js";
 import { defaultRuntime } from "../../runtime.js";
-import { resolveModelCostConfig } from "../../utils/usage-format.js";
+import { estimateUsageCost, resolveModelCostConfig } from "../../utils/usage-format.js";
 import type { OriginatingChannelType, TemplateContext } from "../templating.js";
-import type { VerboseLevel } from "../thinking.js";
+import { resolveResponseUsageMode, type VerboseLevel } from "../thinking.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { runAgentTurnWithFallback } from "./agent-runner-execution.js";
 import {
@@ -41,6 +41,7 @@ import { createReplyToModeFilterForChannel, resolveReplyToMode } from "./reply-t
 import { incrementCompactionCount } from "./session-updates.js";
 import type { TypingController } from "./typing.js";
 import { createTypingSignaler } from "./typing-mode.js";
+import { emitDiagnosticEvent, isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 
 const BLOCK_REPLY_SEND_TIMEOUT_MS = 15_000;
 
@@ -161,11 +162,14 @@ export async function runReplyAgent(params: {
     const steered = queueEmbeddedPiMessage(followupRun.run.sessionId, followupRun.prompt);
     if (steered && !shouldFollowup) {
       if (activeSessionEntry && activeSessionStore && sessionKey) {
-        activeSessionEntry.updatedAt = Date.now();
+        const updatedAt = Date.now();
+        activeSessionEntry.updatedAt = updatedAt;
         activeSessionStore[sessionKey] = activeSessionEntry;
         if (storePath) {
-          await updateSessionStore(storePath, (store) => {
-            store[sessionKey] = activeSessionEntry as SessionEntry;
+          await updateSessionStoreEntry({
+            storePath,
+            sessionKey,
+            update: async () => ({ updatedAt }),
           });
         }
       }
@@ -177,17 +181,22 @@ export async function runReplyAgent(params: {
   if (isActive && (shouldFollowup || resolvedQueue.mode === "steer")) {
     enqueueFollowupRun(queueKey, followupRun, resolvedQueue);
     if (activeSessionEntry && activeSessionStore && sessionKey) {
-      activeSessionEntry.updatedAt = Date.now();
+      const updatedAt = Date.now();
+      activeSessionEntry.updatedAt = updatedAt;
       activeSessionStore[sessionKey] = activeSessionEntry;
       if (storePath) {
-        await updateSessionStore(storePath, (store) => {
-          store[sessionKey] = activeSessionEntry as SessionEntry;
+        await updateSessionStoreEntry({
+          storePath,
+          sessionKey,
+          update: async () => ({ updatedAt }),
         });
       }
     }
     typing.cleanup();
     return undefined;
   }
+
+  await typingSignals.signalRunStart();
 
   activeSessionEntry = await runMemoryFlushIfNeeded({
     cfg,
@@ -290,6 +299,7 @@ export async function runReplyAgent(params: {
       cleanupTranscripts: true,
     });
   try {
+    const runStartedAt = Date.now();
     const runOutcome = await runAgentTurnWithFallback({
       commandBody,
       followupRun,
@@ -328,12 +338,18 @@ export async function runReplyAgent(params: {
       sessionKey &&
       activeSessionEntry.groupActivationNeedsSystemIntro
     ) {
+      const updatedAt = Date.now();
       activeSessionEntry.groupActivationNeedsSystemIntro = false;
-      activeSessionEntry.updatedAt = Date.now();
+      activeSessionEntry.updatedAt = updatedAt;
       activeSessionStore[sessionKey] = activeSessionEntry;
       if (storePath) {
-        await updateSessionStore(storePath, (store) => {
-          store[sessionKey] = activeSessionEntry as SessionEntry;
+        await updateSessionStoreEntry({
+          storePath,
+          sessionKey,
+          update: async () => ({
+            groupActivationNeedsSystemIntro: false,
+            updatedAt,
+          }),
         });
       }
     }
@@ -363,7 +379,7 @@ export async function runReplyAgent(params: {
       directlySentBlockKeys,
       replyToMode,
       replyToChannel,
-      currentMessageId: sessionCtx.MessageSid,
+      currentMessageId: sessionCtx.MessageSidFull ?? sessionCtx.MessageSid,
       messageProvider: followupRun.run.messageProvider,
       messagingToolSentTexts: runResult.messagingToolSentTexts,
       messagingToolSentTargets: runResult.messagingToolSentTargets,
@@ -390,6 +406,43 @@ export async function runReplyAgent(params: {
       lookupContextTokens(modelUsed) ??
       activeSessionEntry?.contextTokens ??
       DEFAULT_CONTEXT_TOKENS;
+
+    if (isDiagnosticsEnabled(cfg) && hasNonzeroUsage(usage)) {
+      const input = usage.input ?? 0;
+      const output = usage.output ?? 0;
+      const cacheRead = usage.cacheRead ?? 0;
+      const cacheWrite = usage.cacheWrite ?? 0;
+      const promptTokens = input + cacheRead + cacheWrite;
+      const totalTokens = usage.total ?? promptTokens + output;
+      const costConfig = resolveModelCostConfig({
+        provider: providerUsed,
+        model: modelUsed,
+        config: cfg,
+      });
+      const costUsd = estimateUsageCost({ usage, cost: costConfig });
+      emitDiagnosticEvent({
+        type: "model.usage",
+        sessionKey,
+        sessionId: followupRun.run.sessionId,
+        channel: replyToChannel,
+        provider: providerUsed,
+        model: modelUsed,
+        usage: {
+          input,
+          output,
+          cacheRead,
+          cacheWrite,
+          promptTokens,
+          total: totalTokens,
+        },
+        context: {
+          limit: contextTokensUsed,
+          used: totalTokens,
+        },
+        costUsd,
+        durationMs: Date.now() - runStartedAt,
+      });
+    }
 
     if (storePath && sessionKey) {
       if (hasNonzeroUsage(usage)) {
@@ -457,10 +510,11 @@ export async function runReplyAgent(params: {
       }
     }
 
-    const responseUsageEnabled =
-      (activeSessionEntry?.responseUsage ??
-        (sessionKey ? activeSessionStore?.[sessionKey]?.responseUsage : undefined)) === "on";
-    if (responseUsageEnabled && hasNonzeroUsage(usage)) {
+    const responseUsageRaw =
+      activeSessionEntry?.responseUsage ??
+      (sessionKey ? activeSessionStore?.[sessionKey]?.responseUsage : undefined);
+    const responseUsageMode = resolveResponseUsageMode(responseUsageRaw);
+    if (responseUsageMode !== "off" && hasNonzeroUsage(usage)) {
       const authMode = resolveModelAuthMode(providerUsed, cfg);
       const showCost = authMode === "api-key";
       const costConfig = showCost
@@ -470,11 +524,14 @@ export async function runReplyAgent(params: {
             config: cfg,
           })
         : undefined;
-      const formatted = formatResponseUsageLine({
+      let formatted = formatResponseUsageLine({
         usage,
         showCost,
         costConfig,
       });
+      if (formatted && responseUsageMode === "full" && sessionKey) {
+        formatted = `${formatted} · session ${sessionKey}`;
+      }
       if (formatted) responseUsageLine = formatted;
     }
 

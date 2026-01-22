@@ -3,11 +3,12 @@ import { resolveDiscordAccount } from "../discord/accounts.js";
 import { resolveIMessageAccount } from "../imessage/accounts.js";
 import { resolveSignalAccount } from "../signal/accounts.js";
 import { resolveSlackAccount } from "../slack/accounts.js";
+import { buildSlackThreadingToolContext } from "../slack/threading-tool-context.js";
 import { resolveTelegramAccount } from "../telegram/accounts.js";
 import { normalizeE164 } from "../utils.js";
 import { resolveWhatsAppAccount } from "../web/accounts.js";
 import { normalizeWhatsAppTarget } from "../whatsapp/normalize.js";
-import { getActivePluginRegistry } from "../plugins/runtime.js";
+import { requireActivePluginRegistry } from "../plugins/runtime.js";
 import {
   resolveDiscordGroupRequireMention,
   resolveIMessageGroupRequireMention,
@@ -21,6 +22,7 @@ import type {
   ChannelElevatedAdapter,
   ChannelGroupAdapter,
   ChannelId,
+  ChannelAgentPromptAdapter,
   ChannelMentionAdapter,
   ChannelPlugin,
   ChannelThreadingAdapter,
@@ -50,6 +52,7 @@ export type ChannelDock = {
   groups?: ChannelGroupAdapter;
   mentions?: ChannelMentionAdapter;
   threading?: ChannelThreadingAdapter;
+  agentPrompt?: ChannelAgentPromptAdapter;
 };
 
 type ChannelDockStreaming = {
@@ -150,11 +153,14 @@ const DOCKS: Record<ChatChannelId, ChannelDock> = {
       },
     },
     threading: {
-      buildToolContext: ({ context, hasRepliedRef }) => ({
-        currentChannelId: context.To?.trim() || undefined,
-        currentThreadTs: context.ReplyToId,
-        hasRepliedRef,
-      }),
+      buildToolContext: ({ context, hasRepliedRef }) => {
+        const channelId = context.From?.trim() || context.To?.trim() || undefined;
+        return {
+          currentChannelId: channelId,
+          currentThreadTs: context.ReplyToId,
+          hasRepliedRef,
+        };
+      },
     },
   },
   discord: {
@@ -221,18 +227,7 @@ const DOCKS: Record<ChatChannelId, ChannelDock> = {
       resolveReplyToMode: ({ cfg, accountId }) =>
         resolveSlackAccount({ cfg, accountId }).replyToMode ?? "off",
       allowTagsWhenOff: true,
-      buildToolContext: ({ cfg, accountId, context, hasRepliedRef }) => {
-        const configuredReplyToMode = resolveSlackAccount({ cfg, accountId }).replyToMode ?? "off";
-        const effectiveReplyToMode = context.ThreadLabel ? "all" : configuredReplyToMode;
-        return {
-          currentChannelId: context.To?.startsWith("channel:")
-            ? context.To.slice("channel:".length)
-            : undefined,
-          currentThreadTs: context.ReplyToId,
-          replyToMode: effectiveReplyToMode,
-          hasRepliedRef,
-        };
-      },
+      buildToolContext: (params) => buildSlackThreadingToolContext(params),
     },
   },
   signal: {
@@ -259,11 +254,16 @@ const DOCKS: Record<ChatChannelId, ChannelDock> = {
           .filter(Boolean),
     },
     threading: {
-      buildToolContext: ({ context, hasRepliedRef }) => ({
-        currentChannelId: context.To?.trim() || undefined,
-        currentThreadTs: context.ReplyToId,
-        hasRepliedRef,
-      }),
+      buildToolContext: ({ context, hasRepliedRef }) => {
+        const isDirect = context.ChatType?.toLowerCase() === "direct";
+        const channelId =
+          (isDirect ? (context.From ?? context.To) : context.To)?.trim() || undefined;
+        return {
+          currentChannelId: channelId,
+          currentThreadTs: context.ReplyToId,
+          hasRepliedRef,
+        };
+      },
     },
   },
   imessage: {
@@ -286,11 +286,16 @@ const DOCKS: Record<ChatChannelId, ChannelDock> = {
       resolveRequireMention: resolveIMessageGroupRequireMention,
     },
     threading: {
-      buildToolContext: ({ context, hasRepliedRef }) => ({
-        currentChannelId: context.To?.trim() || undefined,
-        currentThreadTs: context.ReplyToId,
-        hasRepliedRef,
-      }),
+      buildToolContext: ({ context, hasRepliedRef }) => {
+        const isDirect = context.ChatType?.toLowerCase() === "direct";
+        const channelId =
+          (isDirect ? (context.From ?? context.To) : context.To)?.trim() || undefined;
+        return {
+          currentChannelId: channelId,
+          currentThreadTs: context.ReplyToId,
+          hasRepliedRef,
+        };
+      },
     },
   },
 };
@@ -316,12 +321,12 @@ function buildDockFromPlugin(plugin: ChannelPlugin): ChannelDock {
     groups: plugin.groups,
     mentions: plugin.mentions,
     threading: plugin.threading,
+    agentPrompt: plugin.agentPrompt,
   };
 }
 
 function listPluginDockEntries(): Array<{ id: ChannelId; dock: ChannelDock; order?: number }> {
-  const registry = getActivePluginRegistry();
-  if (!registry) return [];
+  const registry = requireActivePluginRegistry();
   const entries: Array<{ id: ChannelId; dock: ChannelDock; order?: number }> = [];
   const seen = new Set<string>();
   for (const entry of registry.channels) {
@@ -358,8 +363,8 @@ export function listChannelDocks(): ChannelDock[] {
 export function getChannelDock(id: ChannelId): ChannelDock | undefined {
   const core = DOCKS[id as ChatChannelId];
   if (core) return core;
-  const registry = getActivePluginRegistry();
-  const pluginEntry = registry?.channels.find((entry) => entry.plugin.id === id);
+  const registry = requireActivePluginRegistry();
+  const pluginEntry = registry.channels.find((entry) => entry.plugin.id === id);
   if (!pluginEntry) return undefined;
   return pluginEntry.dock ?? buildDockFromPlugin(pluginEntry.plugin);
 }

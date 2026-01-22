@@ -1,14 +1,33 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as replyModule from "../auto-reply/reply.js";
 import type { ClawdbotConfig } from "../config/config.js";
 import { resolveMainSessionKey } from "../config/sessions.js";
 import { runHeartbeatOnce } from "./heartbeat-runner.js";
+import { setActivePluginRegistry } from "../plugins/runtime.js";
+import { createPluginRuntime } from "../plugins/runtime/index.js";
+import { createTestRegistry } from "../test-utils/channel-plugins.js";
+import { telegramPlugin } from "../../extensions/telegram/src/channel.js";
+import { whatsappPlugin } from "../../extensions/whatsapp/src/channel.js";
+import { setTelegramRuntime } from "../../extensions/telegram/src/runtime.js";
+import { setWhatsAppRuntime } from "../../extensions/whatsapp/src/runtime.js";
 
 // Avoid pulling optional runtime deps during isolated runs.
 vi.mock("jiti", () => ({ createJiti: () => () => ({}) }));
+
+beforeEach(() => {
+  const runtime = createPluginRuntime();
+  setTelegramRuntime(runtime);
+  setWhatsAppRuntime(runtime);
+  setActivePluginRegistry(
+    createTestRegistry([
+      { pluginId: "whatsapp", plugin: whatsappPlugin, source: "test" },
+      { pluginId: "telegram", plugin: telegramPlugin, source: "test" },
+    ]),
+  );
+});
 
 describe("resolveHeartbeatIntervalMs", () => {
   it("respects ackMaxChars for heartbeat acks", async () => {
@@ -22,7 +41,6 @@ describe("resolveHeartbeatIntervalMs", () => {
             heartbeat: {
               every: "5m",
               target: "whatsapp",
-              to: "+1555",
               ackMaxChars: 0,
             },
           },
@@ -39,6 +57,7 @@ describe("resolveHeartbeatIntervalMs", () => {
             [sessionKey]: {
               sessionId: "sid",
               updatedAt: Date.now(),
+              lastChannel: "whatsapp",
               lastProvider: "whatsapp",
               lastTo: "+1555",
             },
@@ -83,7 +102,6 @@ describe("resolveHeartbeatIntervalMs", () => {
             heartbeat: {
               every: "5m",
               target: "whatsapp",
-              to: "+1555",
             },
           },
         },
@@ -99,6 +117,7 @@ describe("resolveHeartbeatIntervalMs", () => {
             [sessionKey]: {
               sessionId: "sid",
               updatedAt: Date.now(),
+              lastChannel: "whatsapp",
               lastProvider: "whatsapp",
               lastTo: "+1555",
             },
@@ -145,7 +164,6 @@ describe("resolveHeartbeatIntervalMs", () => {
             heartbeat: {
               every: "5m",
               target: "whatsapp",
-              to: "+1555",
             },
           },
         },
@@ -161,6 +179,7 @@ describe("resolveHeartbeatIntervalMs", () => {
             [sessionKey]: {
               sessionId: "sid",
               updatedAt: originalUpdatedAt,
+              lastChannel: "whatsapp",
               lastProvider: "whatsapp",
               lastTo: "+1555",
             },
@@ -212,7 +231,7 @@ describe("resolveHeartbeatIntervalMs", () => {
       const cfg: ClawdbotConfig = {
         agents: {
           defaults: {
-            heartbeat: { every: "5m", target: "whatsapp", to: "+1555" },
+            heartbeat: { every: "5m", target: "whatsapp" },
           },
         },
         channels: { whatsapp: { allowFrom: ["*"] } },
@@ -227,6 +246,7 @@ describe("resolveHeartbeatIntervalMs", () => {
             [sessionKey]: {
               sessionId: "sid",
               updatedAt: Date.now(),
+              lastChannel: "whatsapp",
               lastProvider: "whatsapp",
               lastTo: "+1555",
             },
@@ -272,7 +292,7 @@ describe("resolveHeartbeatIntervalMs", () => {
       const cfg: ClawdbotConfig = {
         agents: {
           defaults: {
-            heartbeat: { every: "5m", target: "telegram", to: "123456" },
+            heartbeat: { every: "5m", target: "telegram" },
           },
         },
         channels: { telegram: { botToken: "test-bot-token-123" } },
@@ -287,6 +307,7 @@ describe("resolveHeartbeatIntervalMs", () => {
             [sessionKey]: {
               sessionId: "sid",
               updatedAt: Date.now(),
+              lastChannel: "telegram",
               lastProvider: "telegram",
               lastTo: "123456",
             },
@@ -338,7 +359,7 @@ describe("resolveHeartbeatIntervalMs", () => {
       const cfg: ClawdbotConfig = {
         agents: {
           defaults: {
-            heartbeat: { every: "5m", target: "telegram", to: "123456" },
+            heartbeat: { every: "5m", target: "telegram" },
           },
         },
         channels: {
@@ -359,6 +380,7 @@ describe("resolveHeartbeatIntervalMs", () => {
             [sessionKey]: {
               sessionId: "sid",
               updatedAt: Date.now(),
+              lastChannel: "telegram",
               lastProvider: "telegram",
               lastTo: "123456",
             },

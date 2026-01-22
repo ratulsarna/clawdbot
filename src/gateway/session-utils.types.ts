@@ -13,11 +13,14 @@ export type GatewaySessionRow = {
   kind: "direct" | "group" | "global" | "unknown";
   label?: string;
   displayName?: string;
+  derivedTitle?: string;
+  lastMessagePreview?: string;
   channel?: string;
   subject?: string;
   groupChannel?: string;
   space?: string;
   chatType?: NormalizedChatType;
+  origin?: SessionEntry["origin"];
   updatedAt: number | null;
   sessionId?: string;
   systemSent?: boolean;
@@ -30,7 +33,7 @@ export type GatewaySessionRow = {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
-  responseUsage?: "on" | "off";
+  responseUsage?: "on" | "off" | "tokens" | "full";
   modelProvider?: string;
   model?: string;
   contextTokens?: number;
@@ -43,6 +46,13 @@ export type GatewaySessionRow = {
 export type GatewayAgentRow = {
   id: string;
   name?: string;
+  identity?: {
+    name?: string;
+    theme?: string;
+    emoji?: string;
+    avatar?: string;
+    avatarUrl?: string;
+  };
 };
 
 export type SessionsListResult = {

@@ -22,6 +22,21 @@ describe("memory search config", () => {
     expect(resolved).toBeNull();
   });
 
+  it("defaults provider to auto when unspecified", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          memorySearch: {
+            enabled: true,
+          },
+        },
+      },
+    };
+    const resolved = resolveMemorySearchConfig(cfg, "main");
+    expect(resolved?.provider).toBe("auto");
+    expect(resolved?.fallback).toBe("none");
+  });
+
   it("merges defaults and overrides", () => {
     const cfg = {
       agents: {
@@ -67,11 +82,83 @@ describe("memory search config", () => {
     expect(resolved?.store.vector.extensionPath).toBe("/opt/sqlite-vec.dylib");
   });
 
+  it("includes batch defaults for openai without remote overrides", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          memorySearch: {
+            provider: "openai",
+          },
+        },
+      },
+    };
+    const resolved = resolveMemorySearchConfig(cfg, "main");
+    expect(resolved?.remote?.batch).toEqual({
+      enabled: true,
+      wait: true,
+      concurrency: 2,
+      pollIntervalMs: 2000,
+      timeoutMinutes: 60,
+    });
+  });
+
+  it("keeps remote unset for local provider without overrides", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          memorySearch: {
+            provider: "local",
+          },
+        },
+      },
+    };
+    const resolved = resolveMemorySearchConfig(cfg, "main");
+    expect(resolved?.remote).toBeUndefined();
+  });
+
+  it("includes remote defaults for gemini without overrides", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          memorySearch: {
+            provider: "gemini",
+          },
+        },
+      },
+    };
+    const resolved = resolveMemorySearchConfig(cfg, "main");
+    expect(resolved?.remote?.batch).toEqual({
+      enabled: true,
+      wait: true,
+      concurrency: 2,
+      pollIntervalMs: 2000,
+      timeoutMinutes: 60,
+    });
+  });
+
+  it("defaults session delta thresholds", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          memorySearch: {
+            provider: "openai",
+          },
+        },
+      },
+    };
+    const resolved = resolveMemorySearchConfig(cfg, "main");
+    expect(resolved?.sync.sessions).toEqual({
+      deltaBytes: 100000,
+      deltaMessages: 50,
+    });
+  });
+
   it("merges remote defaults with agent overrides", () => {
     const cfg = {
       agents: {
         defaults: {
           memorySearch: {
+            provider: "openai",
             remote: {
               baseUrl: "https://default.example/v1",
               apiKey: "default-key",
@@ -97,6 +184,13 @@ describe("memory search config", () => {
       baseUrl: "https://agent.example/v1",
       apiKey: "default-key",
       headers: { "X-Default": "on" },
+      batch: {
+        enabled: true,
+        wait: true,
+        concurrency: 2,
+        pollIntervalMs: 2000,
+        timeoutMinutes: 60,
+      },
     });
   });
 
@@ -105,6 +199,7 @@ describe("memory search config", () => {
       agents: {
         defaults: {
           memorySearch: {
+            provider: "openai",
             sources: ["memory", "sessions"],
           },
         },
@@ -128,6 +223,7 @@ describe("memory search config", () => {
       agents: {
         defaults: {
           memorySearch: {
+            provider: "openai",
             sources: ["memory", "sessions"],
             experimental: { sessionMemory: true },
           },
