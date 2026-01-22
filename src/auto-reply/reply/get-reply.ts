@@ -151,10 +151,11 @@ export async function getReplyFromConfig(
       };
     }
 
-    // Mark systemSent now to prevent duplicate session:start on early returns
+    // Mark systemSent in the store to prevent duplicate session:start on early returns
     // (e.g., /help, /status, or elevated-unavailable replies).
+    // Don't modify the local systemSent variable - runPreparedReply uses it to detect
+    // first-turn for group intro and skill snapshot initialization.
     if (!systemSent) {
-      systemSent = true;
       sessionEntry.systemSent = true;
       sessionStore[sessionKey] = { ...sessionStore[sessionKey], ...sessionEntry };
       await updateSessionStore(storePath, (store) => {
