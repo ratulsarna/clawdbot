@@ -112,6 +112,7 @@ export async function getReplyFromConfig(
     sessionStartReason,
     resetTriggered,
     systemSent,
+    sessionStartFired,
     abortedLastRun,
     storePath,
     sessionScope,
@@ -124,9 +125,10 @@ export async function getReplyFromConfig(
   // Fire session:start for the first user-visible turn of a session.
   // This covers:
   // - isNewSession=true (idle expiry / first ever session / recovery)
-  // - post-reset first turn where the sessionId was minted earlier but systemSent is still false
+  // - post-reset first turn where the sessionId was minted earlier but sessionStartFired is still false
   // Skip for heartbeat runs to avoid firing before the first real user message.
-  const shouldFireSessionStart = !opts?.isHeartbeat && (isNewSession || !systemSent);
+  // Use sessionStartFired (not systemSent) to track hook firing separately from first-turn agent logic.
+  const shouldFireSessionStart = !opts?.isHeartbeat && (isNewSession || !sessionStartFired);
   if (shouldFireSessionStart && sessionKey) {
     const effectiveReason = sessionStartReason;
     const hookEvent = createInternalHookEvent("session", "start", sessionKey, {
@@ -151,15 +153,15 @@ export async function getReplyFromConfig(
       };
     }
 
-    // Mark systemSent in the store to prevent duplicate session:start on early returns
+    // Mark sessionStartFired in the store to prevent duplicate session:start on early returns
     // (e.g., /help, /status, or elevated-unavailable replies).
-    // Don't modify the local systemSent variable - runPreparedReply uses it to detect
-    // first-turn for group intro and skill snapshot initialization.
-    if (!systemSent) {
-      sessionEntry.systemSent = true;
+    // Use sessionStartFired (not systemSent) to avoid breaking first-turn agent logic.
+    if (!sessionStartFired) {
+      sessionStartFired = true;
+      sessionEntry.sessionStartFired = true;
       sessionStore[sessionKey] = { ...sessionStore[sessionKey], ...sessionEntry };
       await updateSessionStore(storePath, (store) => {
-        store[sessionKey] = { ...store[sessionKey], systemSent: true };
+        store[sessionKey] = { ...store[sessionKey], sessionStartFired: true };
       });
     }
   }

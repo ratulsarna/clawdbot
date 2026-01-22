@@ -46,6 +46,8 @@ export type SessionInitResult = {
   sessionStartReason?: SessionStartReason;
   resetTriggered: boolean;
   systemSent: boolean;
+  /** Whether the session:start hook has already been fired for this session. */
+  sessionStartFired: boolean;
   abortedLastRun: boolean;
   storePath: string;
   sessionScope: SessionScope;
@@ -125,6 +127,7 @@ export async function initSessionState(params: {
   let isNewSession = false;
   let bodyStripped: string | undefined;
   let systemSent = false;
+  let sessionStartFired = false;
   let abortedLastRun = false;
   let resetTriggered = false;
   let sessionStartReason: SessionStartReason | undefined;
@@ -220,6 +223,7 @@ export async function initSessionState(params: {
   if (!isNewSession && freshEntry) {
     sessionId = entry.sessionId;
     systemSent = entry.systemSent ?? false;
+    sessionStartFired = entry.sessionStartFired ?? false;
     abortedLastRun = entry.abortedLastRun ?? false;
     persistedThinking = entry.thinkingLevel;
     persistedVerbose = entry.verboseLevel;
@@ -227,7 +231,7 @@ export async function initSessionState(params: {
     persistedModelOverride = entry.modelOverride;
     persistedProviderOverride = entry.providerOverride;
     // Set reason for first visible turn of existing session (e.g., after compaction reset).
-    if (!systemSent) {
+    if (!sessionStartFired) {
       sessionStartReason = "recovery";
     }
   } else {
@@ -377,6 +381,7 @@ export async function initSessionState(params: {
     isNewSession,
     resetTriggered,
     systemSent,
+    sessionStartFired,
     abortedLastRun,
     storePath,
     sessionScope,
