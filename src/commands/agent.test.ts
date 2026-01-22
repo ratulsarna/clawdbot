@@ -13,12 +13,29 @@ vi.mock("../agents/pi-embedded.js", () => ({
 vi.mock("../agents/model-catalog.js", () => ({
   loadModelCatalog: vi.fn(),
 }));
+vi.mock("../hooks/internal-hooks.js", () => ({
+  createInternalHookEvent: (
+    type: string,
+    action: string,
+    sessionKey: string,
+    context: Record<string, unknown> = {},
+  ) => ({
+    type,
+    action,
+    sessionKey,
+    context,
+    timestamp: new Date(),
+    messages: [],
+  }),
+  triggerInternalHook: vi.fn(),
+}));
 
 import { loadModelCatalog } from "../agents/model-catalog.js";
 import { runEmbeddedPiAgent } from "../agents/pi-embedded.js";
 import type { ClawdbotConfig } from "../config/config.js";
 import * as configModule from "../config/config.js";
 import { emitAgentEvent, onAgentEvent } from "../infra/agent-events.js";
+import { triggerInternalHook } from "../hooks/internal-hooks.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createPluginRuntime } from "../plugins/runtime/index.js";
@@ -313,6 +330,110 @@ describe("agentCommand", () => {
 
       const callArgs = vi.mocked(runEmbeddedPiAgent).mock.calls.at(-1)?.[0];
       expect(callArgs?.prompt).toBe("ping");
+    });
+  });
+
+  it("fires session:start with recovery reason when sessionStartFired is missing", async () => {
+    await withTempHome(async (home) => {
+      const store = path.join(home, "sessions.json");
+      fs.mkdirSync(path.dirname(store), { recursive: true });
+      fs.writeFileSync(
+        store,
+        JSON.stringify(
+          {
+            "agent:main:main": {
+              sessionId: "sess-1",
+              updatedAt: Date.now(),
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      mockConfig(home, store);
+
+      await agentCommand({ message: "hi", sessionKey: "agent:main:main" }, runtime);
+
+      const event = vi.mocked(triggerInternalHook).mock.calls[0]?.[0] as
+        | { type?: string; action?: string; context?: Record<string, unknown> }
+        | undefined;
+      expect(event?.type).toBe("session");
+      expect(event?.action).toBe("start");
+      expect(event?.context?.sessionStartReason).toBe("recovery");
+
+      const saved = JSON.parse(fs.readFileSync(store, "utf-8")) as Record<
+        string,
+        { sessionStartFired?: boolean }
+      >;
+      expect(saved["agent:main:main"]?.sessionStartFired).toBe(true);
+    });
+  });
+
+  it("does not re-fire session:start when the first run fails before session-store update", async () => {
+    await withTempHome(async (home) => {
+      const store = path.join(home, "sessions.json");
+      fs.mkdirSync(path.dirname(store), { recursive: true });
+      fs.writeFileSync(
+        store,
+        JSON.stringify(
+          {
+            "agent:main:main": {
+              sessionId: "sess-1",
+              updatedAt: Date.now(),
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      mockConfig(home, store);
+
+      vi.mocked(runEmbeddedPiAgent).mockRejectedValueOnce(new Error("boom"));
+      await expect(
+        agentCommand({ message: "hi", sessionKey: "agent:main:main" }, runtime),
+      ).rejects.toThrow("boom");
+
+      await agentCommand({ message: "retry", sessionKey: "agent:main:main" }, runtime);
+
+      const sessionStartActions = vi
+        .mocked(triggerInternalHook)
+        .mock.calls.map(([evt]) => evt as { type?: string; action?: string })
+        .filter((evt) => evt.type === "session" && evt.action === "start");
+      expect(sessionStartActions).toHaveLength(1);
+    });
+  });
+
+  it("does not fire session:start when delivery is denied by session policy", async () => {
+    await withTempHome(async (home) => {
+      const store = path.join(home, "sessions.json");
+      fs.mkdirSync(path.dirname(store), { recursive: true });
+      fs.writeFileSync(
+        store,
+        JSON.stringify(
+          {
+            "agent:main:main": {
+              sessionId: "sess-1",
+              updatedAt: Date.now(),
+              sendPolicy: "deny",
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      mockConfig(home, store);
+
+      await expect(
+        agentCommand({ message: "hi", sessionKey: "agent:main:main", deliver: true }, runtime),
+      ).rejects.toThrow("send blocked by session policy");
+
+      expect(vi.mocked(triggerInternalHook).mock.calls.length).toBe(0);
+
+      const saved = JSON.parse(fs.readFileSync(store, "utf-8")) as Record<
+        string,
+        { sessionStartFired?: boolean }
+      >;
+      expect(saved["agent:main:main"]?.sessionStartFired).toBeUndefined();
     });
   });
 

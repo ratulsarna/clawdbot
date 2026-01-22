@@ -155,16 +155,30 @@ export async function agentCommand(
     persistedVerbose,
   } = sessionResolution;
 
-  const shouldFireSessionStart =
-    Boolean(sessionKey) && (isNewSession || resolvedSessionEntry?.systemSent !== true);
+  let sessionEntry = resolvedSessionEntry;
+
+  if (opts.deliver === true) {
+    const sendPolicy = resolveSendPolicy({
+      cfg,
+      entry: sessionEntry,
+      sessionKey,
+      channel: sessionEntry?.channel,
+      chatType: sessionEntry?.chatType,
+    });
+    if (sendPolicy === "deny") {
+      throw new Error("send blocked by session policy");
+    }
+  }
+
+  const sessionStartFired = sessionEntry?.sessionStartFired ?? false;
+  const shouldFireSessionStart = Boolean(sessionKey) && (isNewSession || !sessionStartFired);
 
   if (shouldFireSessionStart && sessionKey) {
     // Derive reason aligned with initSessionState logic.
     // CLI path doesn't parse /new commands, so we can't detect reset_trigger here.
-    // Use "recovery" when entry exists but systemSent is false (e.g., after compaction reset).
     const reason = (() => {
-      if (!isNewSession && resolvedSessionEntry?.systemSent === false) return "recovery";
-      if (isNewSession && resolvedSessionEntry) return "idle_expiry";
+      if (!isNewSession) return "recovery";
+      if (isNewSession && sessionEntry) return "idle_expiry";
       if (isNewSession) return "fresh";
       return undefined;
     })();
@@ -172,7 +186,7 @@ export async function agentCommand(
     const hookEvent = createInternalHookEvent("session", "start", sessionKey, {
       sessionStartReason: reason,
       sessionId,
-      sessionEntry: resolvedSessionEntry,
+      sessionEntry,
       storePath,
       workspaceDir,
       agentId: sessionAgentId,
@@ -186,24 +200,24 @@ export async function agentCommand(
       const clipped = append.length > MAX_CHARS ? append.slice(0, MAX_CHARS) : append;
       extraSystemPrompt = [extraSystemPrompt, clipped].filter(Boolean).join("\n\n");
     }
+
+    if (sessionStore && sessionKey && sessionEntry?.sessionStartFired !== true) {
+      const next: SessionEntry = {
+        ...(sessionStore[sessionKey] ?? sessionEntry ?? { sessionId, updatedAt: Date.now() }),
+        sessionId,
+        updatedAt: Date.now(),
+        sessionStartFired: true,
+      };
+      sessionStore[sessionKey] = next;
+      await updateSessionStore(storePath, (store) => {
+        store[sessionKey] = next;
+      });
+      sessionEntry = next;
+    }
   }
-  let sessionEntry = resolvedSessionEntry;
   const runId = opts.runId?.trim() || sessionId;
 
   try {
-    if (opts.deliver === true) {
-      const sendPolicy = resolveSendPolicy({
-        cfg,
-        entry: sessionEntry,
-        sessionKey,
-        channel: sessionEntry?.channel,
-        chatType: sessionEntry?.chatType,
-      });
-      if (sendPolicy === "deny") {
-        throw new Error("send blocked by session policy");
-      }
-    }
-
     let resolvedThinkLevel =
       thinkOnce ??
       thinkOverride ??
