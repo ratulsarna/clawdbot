@@ -33,7 +33,7 @@ import { formatInboundBodyWithSenderMeta } from "./inbound-sender-meta.js";
 import { normalizeInboundTextNewlines } from "./inbound-text.js";
 import { normalizeSessionDeliveryFields } from "../../utils/delivery-context.js";
 
-export type SessionStartReason = "reset_trigger" | "idle_expiry" | "fresh";
+export type SessionStartReason = "reset_trigger" | "idle_expiry" | "fresh" | "recovery";
 
 export type SessionInitResult = {
   sessionCtx: TemplateContext;
@@ -226,6 +226,10 @@ export async function initSessionState(params: {
     persistedReasoning = entry.reasoningLevel;
     persistedModelOverride = entry.modelOverride;
     persistedProviderOverride = entry.providerOverride;
+    // Set reason for first visible turn of existing session (e.g., after compaction reset).
+    if (!systemSent) {
+      sessionStartReason = "recovery";
+    }
   } else {
     sessionId = crypto.randomUUID();
     isNewSession = true;
