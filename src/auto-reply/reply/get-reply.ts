@@ -7,6 +7,7 @@ import { resolveModelRefFromString } from "../../agents/model-selection.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { DEFAULT_AGENT_WORKSPACE_DIR, ensureAgentWorkspace } from "../../agents/workspace.js";
 import { type ClawdbotConfig, loadConfig } from "../../config/config.js";
+import { updateSessionStore } from "../../config/sessions.js";
 import { defaultRuntime } from "../../runtime.js";
 import { resolveCommandAuthorization } from "../command-auth.js";
 import type { MsgContext } from "../templating.js";
@@ -148,6 +149,17 @@ export async function getReplyFromConfig(
         ...sessionCtx,
         GroupSystemPrompt: [current, clipped].filter(Boolean).join("\n\n"),
       };
+    }
+
+    // Mark systemSent now to prevent duplicate session:start on early returns
+    // (e.g., /help, /status, or elevated-unavailable replies).
+    if (!systemSent) {
+      systemSent = true;
+      sessionEntry.systemSent = true;
+      sessionStore[sessionKey] = { ...sessionStore[sessionKey], ...sessionEntry };
+      await updateSessionStore(storePath, (store) => {
+        store[sessionKey] = { ...store[sessionKey], systemSent: true };
+      });
     }
   }
 
