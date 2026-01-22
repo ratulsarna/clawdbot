@@ -358,14 +358,20 @@ function resolveExecutablePath(rawExecutable: string, cwd?: string, env?: NodeJS
     const candidate = path.resolve(base, expanded);
     return isExecutableFile(candidate) ? candidate : undefined;
   }
-  const envPath = env?.PATH ?? process.env.PATH ?? "";
+  const envPath = env?.PATH ?? env?.Path ?? process.env.PATH ?? process.env.Path ?? "";
   const entries = envPath.split(path.delimiter).filter(Boolean);
   const hasExtension = process.platform === "win32" && path.extname(expanded).length > 0;
   const extensions =
     process.platform === "win32"
       ? hasExtension
         ? [""]
-        : (env?.PATHEXT ?? process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM")
+        : (
+            env?.PATHEXT ??
+            env?.Pathext ??
+            process.env.PATHEXT ??
+            process.env.Pathext ??
+            ".EXE;.CMD;.BAT;.COM"
+          )
             .split(";")
             .map((ext) => ext.toLowerCase())
       : [""];
@@ -406,6 +412,14 @@ function normalizeMatchTarget(value: string): string {
   return value.replace(/\\\\/g, "/").toLowerCase();
 }
 
+function tryRealpath(value: string): string | null {
+  try {
+    return fs.realpathSync(value);
+  } catch {
+    return null;
+  }
+}
+
 function globToRegExp(pattern: string): RegExp {
   let regex = "^";
   let i = 0;
@@ -438,8 +452,15 @@ function matchesPattern(pattern: string, target: string): boolean {
   const trimmed = pattern.trim();
   if (!trimmed) return false;
   const expanded = trimmed.startsWith("~") ? expandHome(trimmed) : trimmed;
-  const normalizedPattern = normalizeMatchTarget(expanded);
-  const normalizedTarget = normalizeMatchTarget(target);
+  const hasWildcard = /[*?]/.test(expanded);
+  let normalizedPattern = expanded;
+  let normalizedTarget = target;
+  if (process.platform === "win32" && !hasWildcard) {
+    normalizedPattern = tryRealpath(expanded) ?? expanded;
+    normalizedTarget = tryRealpath(target) ?? target;
+  }
+  normalizedPattern = normalizeMatchTarget(normalizedPattern);
+  normalizedTarget = normalizeMatchTarget(normalizedTarget);
   const regex = globToRegExp(normalizedPattern);
   return regex.test(normalizedTarget);
 }
@@ -498,7 +519,7 @@ function splitShellPipeline(command: string): { ok: boolean; reason?: string; se
       escaped = false;
       continue;
     }
-    if (!inSingle && ch === "\\") {
+    if (!inSingle && !inDouble && ch === "\\") {
       escaped = true;
       buf += ch;
       continue;
@@ -574,7 +595,7 @@ function tokenizeShellSegment(segment: string): string[] | null {
       escaped = false;
       continue;
     }
-    if (!inSingle && ch === "\\") {
+    if (!inSingle && !inDouble && ch === "\\") {
       escaped = true;
       continue;
     }
